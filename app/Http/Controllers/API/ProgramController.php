@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Program;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Str;
 
 class ProgramController extends Controller
 {
@@ -30,7 +31,7 @@ class ProgramController extends Controller
      */
     public function store(Request $request)
     {
-        $validator = Validator::make($request->all(), $this->validationRules());
+        $validator = Validator::make($request->all(), $this->storeValidationRules());
 
         $this->validateShifts($validator, $request);
 
@@ -42,34 +43,34 @@ class ProgramController extends Controller
             ], 422);
         }
 
-        $generatedCode = $this->generateProgramCode($request->name);
+        $data = $validator->validated();
 
         $program = Program::create([
-            'code' => $generatedCode,
-            'slug' => $request->slug,
-            'name' => $request->name,
-            'badge' => $request->badge,
-            'category' => $request->category,
-            'duration' => $request->duration,
-            'level' => $request->level,
-            'format' => $request->format,
-            'status' => $request->status,
-            'instructor' => $request->instructor,
-            'students' => $request->students ?? 0,
-            'start_date' => $request->start_date,
-            'end_date' => $request->end_date,
-            'image' => $request->image,
-            'intro' => $request->intro,
-            'description' => $request->description,
-            'overview' => $request->overview,
-            'icon_key' => $request->icon_key,
-            'is_active' => $request->has('is_active') ? $request->boolean('is_active') : true,
-            'objectives' => $request->objectives,
-            'modules' => $request->modules,
-            'skills' => $request->skills,
-            'outcomes' => $request->outcomes,
-            'tools' => $request->tools,
-            'shifts' => $this->prepareShifts($request->input('shifts', [])),
+            'code' => $this->generateProgramCode($data['name']),
+            'slug' => $data['slug'] ?? null,
+            'name' => $data['name'],
+            'badge' => $data['badge'] ?? null,
+            'category' => $data['category'],
+            'duration' => $data['duration'],
+            'level' => $data['level'] ?? null,
+            'format' => $data['format'] ?? null,
+            'status' => $data['status'],
+            'instructor' => $data['instructor'],
+            'students' => $data['students'] ?? 0,
+            'start_date' => $data['start_date'],
+            'end_date' => $data['end_date'] ?? null,
+            'image' => $data['image'] ?? null,
+            'intro' => $data['intro'] ?? null,
+            'description' => $data['description'] ?? null,
+            'overview' => $data['overview'] ?? null,
+            'icon_key' => $data['icon_key'] ?? null,
+            'is_active' => array_key_exists('is_active', $data) ? (bool) $data['is_active'] : true,
+            'objectives' => $data['objectives'] ?? [],
+            'modules' => $data['modules'] ?? [],
+            'skills' => $data['skills'] ?? [],
+            'outcomes' => $data['outcomes'] ?? [],
+            'tools' => $data['tools'] ?? [],
+            'shifts' => $this->prepareShifts($data['shifts'] ?? []),
         ]);
 
         return response()->json([
@@ -114,7 +115,7 @@ class ProgramController extends Controller
             ], 404);
         }
 
-        $validator = Validator::make($request->all(), $this->validationRules());
+        $validator = Validator::make($request->all(), $this->updateValidationRules());
 
         $this->validateShifts($validator, $request);
 
@@ -126,33 +127,35 @@ class ProgramController extends Controller
             ], 422);
         }
 
+        $data = $validator->validated();
+
         $program->update([
-            'slug' => $request->slug,
-            'name' => $request->name,
-            'badge' => $request->badge,
-            'category' => $request->category,
-            'duration' => $request->duration,
-            'level' => $request->level,
-            'format' => $request->format,
-            'status' => $request->status,
-            'instructor' => $request->instructor,
-            'students' => $request->students ?? 0,
-            'start_date' => $request->start_date,
-            'end_date' => $request->end_date,
-            'image' => $request->image,
-            'intro' => $request->intro,
-            'description' => $request->description,
-            'overview' => $request->overview,
-            'icon_key' => $request->icon_key,
-            'is_active' => $request->has('is_active')
-                ? $request->boolean('is_active')
-                : $program->is_active,
-            'objectives' => $request->objectives,
-            'modules' => $request->modules,
-            'skills' => $request->skills,
-            'outcomes' => $request->outcomes,
-            'tools' => $request->tools,
-            'shifts' => $this->prepareShifts($request->input('shifts', [])),
+            'slug' => $data['slug'] ?? $program->slug,
+            'name' => $data['name'] ?? $program->name,
+            'badge' => $data['badge'] ?? $program->badge,
+            'category' => $data['category'] ?? $program->category,
+            'duration' => $data['duration'] ?? $program->duration,
+            'level' => $data['level'] ?? $program->level,
+            'format' => $data['format'] ?? $program->format,
+            'status' => $data['status'] ?? $program->status,
+            'instructor' => $data['instructor'] ?? $program->instructor,
+            'students' => $data['students'] ?? $program->students,
+            'start_date' => $data['start_date'] ?? $program->start_date,
+            'end_date' => array_key_exists('end_date', $data) ? $data['end_date'] : $program->end_date,
+            'image' => array_key_exists('image', $data) ? $data['image'] : $program->image,
+            'intro' => array_key_exists('intro', $data) ? $data['intro'] : $program->intro,
+            'description' => array_key_exists('description', $data) ? $data['description'] : $program->description,
+            'overview' => array_key_exists('overview', $data) ? $data['overview'] : $program->overview,
+            'icon_key' => array_key_exists('icon_key', $data) ? $data['icon_key'] : $program->icon_key,
+            'is_active' => array_key_exists('is_active', $data) ? (bool) $data['is_active'] : $program->is_active,
+            'objectives' => array_key_exists('objectives', $data) ? $data['objectives'] : $program->objectives,
+            'modules' => array_key_exists('modules', $data) ? $data['modules'] : $program->modules,
+            'skills' => array_key_exists('skills', $data) ? $data['skills'] : $program->skills,
+            'outcomes' => array_key_exists('outcomes', $data) ? $data['outcomes'] : $program->outcomes,
+            'tools' => array_key_exists('tools', $data) ? $data['tools'] : $program->tools,
+            'shifts' => array_key_exists('shifts', $data)
+                ? $this->prepareShifts($data['shifts'] ?? [])
+                : $program->shifts,
         ]);
 
         return response()->json([
@@ -185,9 +188,9 @@ class ProgramController extends Controller
     }
 
     /**
-     * Common validation rules.
+     * Validation rules for store.
      */
-    private function validationRules(): array
+    private function storeValidationRules(): array
     {
         return [
             'slug' => 'nullable|string|max:255',
@@ -214,14 +217,54 @@ class ProgramController extends Controller
             'outcomes' => 'nullable|array',
             'tools' => 'nullable|array',
 
-            // Shift settings
             'shifts' => 'nullable|array',
-            'shifts.*.name' => 'required_with:shifts|string|max:255',
-            'shifts.*.start_time' => 'required_with:shifts|date_format:H:i',
-            'shifts.*.end_time' => 'required_with:shifts|date_format:H:i',
-            'shifts.*.capacity' => 'required_with:shifts|integer|min:1',
+            'shifts.*.id' => 'nullable|string|max:255',
+            'shifts.*.name' => 'nullable|string|max:255',
+            'shifts.*.start_time' => 'nullable|date_format:H:i',
+            'shifts.*.end_time' => 'nullable|date_format:H:i',
+            'shifts.*.capacity' => 'nullable|integer|min:1',
+            'shifts.*.filled' => 'nullable|integer|min:0',
+            'shifts.*.enrolled' => 'nullable|integer|min:0',
+            'shifts.*.current_students' => 'nullable|integer|min:0',
+        ];
+    }
 
-            // optional current filled students inside shift
+    /**
+     * Validation rules for update.
+     */
+    private function updateValidationRules(): array
+    {
+        return [
+            'slug' => 'nullable|string|max:255',
+            'name' => 'sometimes|required|string|max:255',
+            'badge' => 'nullable|string|max:255',
+            'category' => 'sometimes|required|string|max:255',
+            'duration' => 'sometimes|required|string|max:255',
+            'level' => 'nullable|string|max:255',
+            'format' => 'nullable|string|max:255',
+            'status' => 'sometimes|required|in:Active,Draft,Archived',
+            'instructor' => 'sometimes|required|string|max:255',
+            'students' => 'nullable|integer|min:0',
+            'start_date' => 'sometimes|required|date',
+            'end_date' => 'nullable|date|after_or_equal:start_date',
+            'image' => 'nullable|string',
+            'intro' => 'nullable|string',
+            'description' => 'nullable|string',
+            'overview' => 'nullable|string',
+            'icon_key' => 'nullable|string|max:255',
+            'is_active' => 'nullable|boolean',
+            'objectives' => 'nullable|array',
+            'modules' => 'nullable|array',
+            'skills' => 'nullable|array',
+            'outcomes' => 'nullable|array',
+            'tools' => 'nullable|array',
+
+            'shifts' => 'nullable|array',
+            'shifts.*.id' => 'nullable|string|max:255',
+            'shifts.*.name' => 'nullable|string|max:255',
+            'shifts.*.start_time' => 'nullable|date_format:H:i',
+            'shifts.*.end_time' => 'nullable|date_format:H:i',
+            'shifts.*.capacity' => 'nullable|integer|min:1',
             'shifts.*.filled' => 'nullable|integer|min:0',
             'shifts.*.enrolled' => 'nullable|integer|min:0',
             'shifts.*.current_students' => 'nullable|integer|min:0',
@@ -243,9 +286,17 @@ class ProgramController extends Controller
             $usedNames = [];
 
             foreach ($shifts as $index => $shift) {
+                if (!is_array($shift)) {
+                    $validator->errors()->add(
+                        "shifts.$index",
+                        'Each shift must be a valid object.'
+                    );
+                    continue;
+                }
+
                 $name = trim((string) ($shift['name'] ?? ''));
-                $startTime = $shift['start_time'] ?? null;
-                $endTime = $shift['end_time'] ?? null;
+                $startTime = trim((string) ($shift['start_time'] ?? ''));
+                $endTime = trim((string) ($shift['end_time'] ?? ''));
                 $capacity = (int) ($shift['capacity'] ?? 0);
                 $filled = (int) (
                     $shift['filled']
@@ -253,6 +304,44 @@ class ProgramController extends Controller
                     ?? $shift['current_students']
                     ?? 0
                 );
+
+                $hasAnyValue =
+                    $name !== '' ||
+                    $startTime !== '' ||
+                    $endTime !== '' ||
+                    $capacity > 0;
+
+                if (!$hasAnyValue) {
+                    continue;
+                }
+
+                if ($name === '') {
+                    $validator->errors()->add(
+                        "shifts.$index.name",
+                        'Shift name is required.'
+                    );
+                }
+
+                if ($startTime === '') {
+                    $validator->errors()->add(
+                        "shifts.$index.start_time",
+                        'Start time is required.'
+                    );
+                }
+
+                if ($endTime === '') {
+                    $validator->errors()->add(
+                        "shifts.$index.end_time",
+                        'End time is required.'
+                    );
+                }
+
+                if ($capacity < 1) {
+                    $validator->errors()->add(
+                        "shifts.$index.capacity",
+                        'Capacity must be at least 1.'
+                    );
+                }
 
                 if ($name !== '') {
                     $lowerName = strtolower($name);
@@ -267,7 +356,7 @@ class ProgramController extends Controller
                     $usedNames[] = $lowerName;
                 }
 
-                if ($startTime && $endTime) {
+                if ($startTime !== '' && $endTime !== '') {
                     if (strtotime($startTime) >= strtotime($endTime)) {
                         $validator->errors()->add(
                             "shifts.$index.end_time",
@@ -298,28 +387,32 @@ class ProgramController extends Controller
         $prepared = [];
 
         foreach ($shifts as $index => $shift) {
+            if (!is_array($shift)) {
+                continue;
+            }
+
             $name = trim((string) ($shift['name'] ?? ''));
-            $startTime = $shift['start_time'] ?? null;
-            $endTime = $shift['end_time'] ?? null;
-            $capacity = (int) ($shift['capacity'] ?? 0);
-            $filled = (int) (
+            $startTime = trim((string) ($shift['start_time'] ?? ''));
+            $endTime = trim((string) ($shift['end_time'] ?? ''));
+            $capacity = max((int) ($shift['capacity'] ?? 0), 0);
+            $filled = max((int) (
                 $shift['filled']
                 ?? $shift['enrolled']
                 ?? $shift['current_students']
                 ?? 0
-            );
+            ), 0);
 
-            if ($name === '' && !$startTime && !$endTime && $capacity === 0) {
+            if ($name === '' && $startTime === '' && $endTime === '' && $capacity === 0) {
                 continue;
             }
 
             $isFull = $capacity > 0 && $filled >= $capacity;
 
             $prepared[] = [
-                'id' => $shift['id'] ?? ('shift_' . ($index + 1) . '_' . time()),
+                'id' => !empty($shift['id']) ? (string) $shift['id'] : (string) Str::uuid(),
                 'name' => $name,
-                'start_time' => $startTime,
-                'end_time' => $endTime,
+                'start_time' => $startTime !== '' ? $startTime : null,
+                'end_time' => $endTime !== '' ? $endTime : null,
                 'capacity' => $capacity,
                 'volume' => $capacity,
                 'filled' => $filled,
