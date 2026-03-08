@@ -4,344 +4,424 @@ namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
 use App\Models\Program;
+use App\Models\ProgramApplication;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Validator;
-use Illuminate\Support\Str;
-use Illuminate\Validation\Rule;
 
-class ProgramController extends Controller
+class ProgramApplicationController extends Controller
 {
     /**
-     * Display a listing of the programs.
+     * Display a listing of applications.
      */
-    public function index()
+    public function index(Request $request)
     {
-        $programs = Program::latest()->get();
+        $query = ProgramApplication::with('program')->latest();
+
+        if ($request->filled('program_id')) {
+            $query->where('program_id', $request->program_id);
+        }
+
+        if ($request->filled('status')) {
+            $query->where('status', $request->status);
+        }
+
+        if ($request->filled('search')) {
+            $search = trim($request->search);
+
+            $query->where(function ($q) use ($search) {
+                $q->where('first_name', 'like', "%{$search}%")
+                    ->orWhere('last_name', 'like', "%{$search}%")
+                    ->orWhere('email', 'like', "%{$search}%")
+                    ->orWhere('phone', 'like', "%{$search}%");
+            });
+        }
+
+        $applications = $query->paginate($request->integer('per_page', 20));
+
+        $applications->getCollection()->transform(function ($application) {
+            return $this->formatApplication($application);
+        });
 
         return response()->json([
             'success' => true,
-            'message' => 'Programs retrieved successfully.',
-            'data' => $programs,
+            'message' => 'Applications retrieved successfully.',
+            'data' => $applications,
         ], 200);
     }
 
     /**
-     * Display the specified program.
-     */
-    public function show(Program $program)
-    {
-        return response()->json([
-            'success' => true,
-            'message' => 'Program retrieved successfully.',
-            'data' => $program,
-        ], 200);
-    }
-
-    /**
-     * Store a newly created program.
+     * Store a newly created application.
      */
     public function store(Request $request)
     {
-        $payload = $this->normalizePayload($request);
+        $validator = Validator::make($request->all(), [
+            'auth_provider' => 'nullable|string|max:50',
 
-        $validator = Validator::make($payload, $this->rules(), $this->messages());
+            'program_id' => 'required|exists:programs,id',
+            'shift_id' => 'nullable|string|max:255',
+            'experience_level' => 'nullable|string|max:255',
+
+            'selected_skills' => 'nullable|array',
+            'selected_skills.*' => 'nullable|string|max:255',
+
+            'selected_tools' => 'nullable|array',
+            'selected_tools.*' => 'nullable|string|max:255',
+
+            'applicant.first_name' => 'required|string|max:255',
+            'applicant.last_name' => 'required|string|max:255',
+            'applicant.email' => 'required|email|max:255',
+            'applicant.phone' => 'required|string|max:255',
+            'applicant.country' => 'required|string|max:255',
+            'applicant.city' => 'nullable|string|max:255',
+            'applicant.date_of_birth' => 'nullable|date',
+            'applicant.gender' => 'nullable|string|max:255',
+
+            'background.education_level' => 'nullable|string|max:255',
+            'background.school_name' => 'nullable|string|max:255',
+            'background.field_of_study' => 'nullable|string|max:255',
+
+            'consents.agree_terms' => 'required|boolean',
+            'consents.agree_communication' => 'nullable|boolean',
+
+            'submitted_at' => 'nullable|date',
+        ]);
+
+        $validator->after(function ($validator) use ($request) {
+            $program = Program::find($request->program_id);
+
+            if (!$program) {
+                return;
+            }
+
+            $allowedSkills = $this->normalizeOptionValues($program->skills ?? []);
+            $allowedTools = $this->normalizeOptionValues($program->tools ?? []);
+            $allowedExperienceLevels = $this->normalizeOptionValues($program->experience_levels ?? []);
+            $allowedShifts = $this->normalizeShifts($program->shifts ?? []);
+
+            $shiftId = $request->input('shift_id');
+            $selectedSkills = $request->input('selected_skills', []);
+            $selectedTools = $request->input('selected_tools', []);
+            $experienceLevel = $request->input('experience_level');
+
+            if ($shiftId) {
+                $matchedShift = collect($allowedShifts)->firstWhere('id', $shiftId);
+
+                if (!$matchedShift) {
+                    $validator->errors()->add('shift_id', 'Selected shift does not belong to this program.');
+                } elseif (!empty($matchedShift['is_full'])) {
+                    $validator->errors()->add('shift_id', 'Selected shift is already full.');
+                }
+            }
+
+            if (is_array($selectedSkills)) {
+                foreach ($selectedSkills as $index => $skill) {
+                    if (!in_array($skill, $allowedSkills, true)) {
+                        $validator->errors()->add(
+                            "selected_skills.$index",
+                            'Selected skill is not allowed for this program.'
+                        );
+                    }
+                }
+            }
+
+            if (is_array($selectedTools)) {
+                foreach ($selectedTools as $index => $tool) {
+                    if (!in_array($tool, $allowedTools, true)) {
+                        $validator->errors()->add(
+                            "selected_tools.$index",
+                            'Selected tool is not allowed for this program.'
+                        );
+                    }
+                }
+            }
+
+            if (!empty($allowedExperienceLevels) && $experienceLevel) {
+                if (!in_array($experienceLevel, $allowedExperienceLevels, true)) {
+                    $validator->errors()->add(
+                        'experience_level',
+                        'Selected experience level is not allowed for this program.'
+                    );
+                }
+            }
+
+            if (!$request->boolean('consents.agree_terms')) {
+                $validator->errors()->add(
+                    'consents.agree_terms',
+                    'You must agree to the terms before submitting.'
+                );
+            }
+        });
 
         if ($validator->fails()) {
             return response()->json([
                 'success' => false,
-                'message' => 'Validation failed.',
+                'message' => 'Validation error.',
                 'errors' => $validator->errors(),
             ], 422);
         }
 
-        $validated = $validator->validated();
+        $program = Program::findOrFail($request->program_id);
+        $shifts = $this->normalizeShifts($program->shifts ?? []);
+        $selectedShift = collect($shifts)->firstWhere('id', $request->shift_id);
 
-        if (empty($validated['slug']) && !empty($validated['name'])) {
-            $validated['slug'] = $this->generateUniqueSlug($validated['name']);
-        }
+        $application = ProgramApplication::create([
+            'program_id' => $program->id,
+            'program_title' => $program->name ?? null,
+            'program_slug' => $program->slug ?? null,
 
-        $validated = $this->filterOnlyExistingColumns($validated);
+            'shift_id' => $request->shift_id,
+            'shift_name' => $selectedShift['name'] ?? null,
+            'experience_level' => $request->experience_level,
+            'selected_skills' => array_values($request->input('selected_skills', [])),
+            'selected_tools' => array_values($request->input('selected_tools', [])),
 
-        $program = Program::create($validated);
+            'auth_provider' => $request->input('auth_provider', 'manual'),
+
+            'first_name' => $request->input('applicant.first_name'),
+            'last_name' => $request->input('applicant.last_name'),
+            'email' => $request->input('applicant.email'),
+            'phone' => $request->input('applicant.phone'),
+            'country' => $request->input('applicant.country'),
+            'city' => $request->input('applicant.city'),
+            'date_of_birth' => $request->input('applicant.date_of_birth'),
+            'gender' => $request->input('applicant.gender'),
+
+            'education_level' => $request->input('background.education_level'),
+            'school_name' => $request->input('background.school_name'),
+            'field_of_study' => $request->input('background.field_of_study'),
+
+            'agree_terms' => $request->boolean('consents.agree_terms'),
+            'agree_communication' => $request->has('consents.agree_communication')
+                ? $request->boolean('consents.agree_communication')
+                : true,
+
+            'status' => 'Pending',
+            'submitted_at' => $request->input('submitted_at', now()),
+            'meta' => [
+                'ip_address' => $request->ip(),
+                'user_agent' => $request->userAgent(),
+            ],
+        ]);
 
         return response()->json([
             'success' => true,
-            'message' => 'Program created successfully.',
-            'data' => $program,
+            'message' => 'Application submitted successfully.',
+            'data' => $this->formatApplication($application->fresh('program')),
         ], 201);
     }
 
     /**
-     * Update the specified program.
+     * Display the specified application.
      */
-    public function update(Request $request, Program $program)
+    public function show(string $id)
     {
-        $payload = $this->normalizePayload($request);
+        $application = ProgramApplication::with('program')->find($id);
 
-        $validator = Validator::make(
-            $payload,
-            $this->rules($program->id),
-            $this->messages()
-        );
+        if (!$application) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Application not found.',
+            ], 404);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Application retrieved successfully.',
+            'data' => $this->formatApplication($application),
+        ], 200);
+    }
+
+    /**
+     * Update application status/admin note.
+     */
+    public function update(Request $request, string $id)
+    {
+        $application = ProgramApplication::find($id);
+
+        if (!$application) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Application not found.',
+            ], 404);
+        }
+
+        $validator = Validator::make($request->all(), [
+            'status' => 'nullable|in:Pending,Reviewed,Accepted,Rejected,Waitlisted',
+            'admin_note' => 'nullable|string',
+        ]);
 
         if ($validator->fails()) {
             return response()->json([
                 'success' => false,
-                'message' => 'Validation failed.',
+                'message' => 'Validation error.',
                 'errors' => $validator->errors(),
             ], 422);
         }
 
-        $validated = $validator->validated();
+        $application->update([
+            'status' => $request->input('status', $application->status),
+            'admin_note' => $request->input('admin_note', $application->admin_note),
+        ]);
 
-        if (empty($validated['slug']) && !empty($validated['name'])) {
-            $validated['slug'] = $this->generateUniqueSlug($validated['name'], $program->id);
+        return response()->json([
+            'success' => true,
+            'message' => 'Application updated successfully.',
+            'data' => $this->formatApplication($application->fresh('program')),
+        ], 200);
+    }
+
+    /**
+     * Remove the specified application.
+     */
+    public function destroy(string $id)
+    {
+        $application = ProgramApplication::find($id);
+
+        if (!$application) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Application not found.',
+            ], 404);
         }
 
-        $validated = $this->filterOnlyExistingColumns($validated);
-
-        $program->update($validated);
+        $application->delete();
 
         return response()->json([
             'success' => true,
-            'message' => 'Program updated successfully.',
-            'data' => $program->fresh(),
+            'message' => 'Application deleted successfully.',
         ], 200);
     }
 
     /**
-     * Remove the specified program.
+     * Convert stored arrays/options into string values list.
      */
-    public function destroy(Program $program)
+    private function normalizeOptionValues($value): array
     {
-        $program->delete();
+        if (is_string($value)) {
+            $decoded = json_decode($value, true);
+            $value = json_last_error() === JSON_ERROR_NONE ? $decoded : [];
+        }
 
-        return response()->json([
-            'success' => true,
-            'message' => 'Program deleted successfully.',
-        ], 200);
+        if (!is_array($value)) {
+            return [];
+        }
+
+        $items = [];
+
+        foreach ($value as $item) {
+            if (is_string($item)) {
+                $items[] = trim($item);
+                continue;
+            }
+
+            if (is_array($item)) {
+                $items[] = trim(
+                    (string) (
+                        $item['value']
+                        ?? $item['label']
+                        ?? $item['name']
+                        ?? $item['title']
+                        ?? ''
+                    )
+                );
+            }
+        }
+
+        return array_values(array_filter(array_unique($items)));
     }
 
     /**
-     * Validation rules.
+     * Normalize shifts from program record.
      */
-    private function rules(?int $programId = null): array
+    private function normalizeShifts($shifts): array
+    {
+        if (is_string($shifts)) {
+            $decoded = json_decode($shifts, true);
+            $shifts = json_last_error() === JSON_ERROR_NONE ? $decoded : [];
+        }
+
+        if (!is_array($shifts)) {
+            return [];
+        }
+
+        $normalized = [];
+
+        foreach ($shifts as $index => $shift) {
+            if (!is_array($shift)) {
+                continue;
+            }
+
+            $capacity = (int) ($shift['capacity'] ?? 0);
+            $filled = (int) (
+                $shift['filled']
+                ?? $shift['enrolled']
+                ?? $shift['current_students']
+                ?? 0
+            );
+
+            $normalized[] = [
+                'id' => $shift['id'] ?? ('shift_' . ($index + 1)),
+                'name' => $shift['name'] ?? '',
+                'start_time' => $shift['start_time'] ?? $shift['startTime'] ?? null,
+                'end_time' => $shift['end_time'] ?? $shift['endTime'] ?? null,
+                'capacity' => $capacity,
+                'filled' => $filled,
+                'available_slots' => $shift['available_slots'] ?? max($capacity - $filled, 0),
+                'is_full' => $shift['is_full'] ?? $shift['isFull'] ?? ($capacity > 0 && $filled >= $capacity),
+            ];
+        }
+
+        return array_values($normalized);
+    }
+
+    /**
+     * Format one application response.
+     */
+    private function formatApplication(ProgramApplication $application): array
     {
         return [
-            'slug' => [
-                'nullable',
-                'string',
-                'max:255',
-                Rule::unique('programs', 'slug')->ignore($programId),
+            'id' => $application->id,
+            'program' => [
+                'id' => $application->program_id,
+                'title' => $application->program_title ?: optional($application->program)->name,
+                'slug' => $application->program_slug ?: optional($application->program)->slug,
             ],
-            'name' => 'required|string|max:255',
-            'badge' => 'nullable|string|max:255',
-            'category' => 'required|string|max:255',
-            'duration' => 'required|string|max:255',
-            'level' => 'nullable|string|max:255',
-            'format' => 'nullable|string|max:255',
-            'status' => 'required|in:Active,Draft,Closed',
+            'shift' => [
+                'id' => $application->shift_id,
+                'name' => $application->shift_name,
+            ],
+            'experience_level' => $application->experience_level,
+            'selected_skills' => $application->selected_skills ?? [],
+            'selected_tools' => $application->selected_tools ?? [],
+            'auth_provider' => $application->auth_provider,
 
-            'description' => 'nullable|string',
-            'overview' => 'nullable|string',
-            'excerpt' => 'nullable|string',
-            'instructor' => 'nullable|string|max:255',
-            'location' => 'nullable|string|max:255',
-            'startDate' => 'nullable|date',
-            'endDate' => 'nullable|date',
-            'applicationDeadline' => 'nullable|date',
+            'applicant' => [
+                'first_name' => $application->first_name,
+                'last_name' => $application->last_name,
+                'email' => $application->email,
+                'phone' => $application->phone,
+                'country' => $application->country,
+                'city' => $application->city,
+                'date_of_birth' => $application->date_of_birth?->format('Y-m-d'),
+                'gender' => $application->gender,
+            ],
 
-            'objectives' => 'nullable|array',
-            'objectives.*' => 'nullable|string',
+            'background' => [
+                'education_level' => $application->education_level,
+                'school_name' => $application->school_name,
+                'field_of_study' => $application->field_of_study,
+            ],
 
-            'modules' => 'nullable|array',
-            'modules.*' => 'nullable|string',
+            'consents' => [
+                'agree_terms' => (bool) $application->agree_terms,
+                'agree_communication' => (bool) $application->agree_communication,
+            ],
 
-            'requirements' => 'nullable|array',
-            'requirements.*' => 'nullable|string',
-
-            'benefits' => 'nullable|array',
-            'benefits.*' => 'nullable|string',
-
-            'skills' => 'nullable|array',
-            'skills.*' => 'nullable|string',
-
-            'tools' => 'nullable|array',
-            'tools.*' => 'nullable|string',
-
-            'outcomes' => 'nullable|array',
-            'outcomes.*' => 'nullable|string',
-
-            /**
-             * SHIFTS FIX
-             * This is the important part for multi-shift support.
-             */
-            'shifts' => 'nullable|array',
-            'shifts.*.name' => 'required|string|max:255',
-            'shifts.*.isFull' => 'nullable|boolean',
-            'shifts.*.capacity' => 'nullable|integer|min:1',
-            'shifts.*.startDate' => 'nullable|date',
-            'shifts.*.endDate' => 'nullable|date',
+            'status' => $application->status,
+            'admin_note' => $application->admin_note,
+            'submitted_at' => optional($application->submitted_at)->toISOString(),
+            'created_at' => optional($application->created_at)->toISOString(),
+            'updated_at' => optional($application->updated_at)->toISOString(),
         ];
-    }
-
-    /**
-     * Custom validation messages.
-     */
-    private function messages(): array
-    {
-        return [
-            'shifts.array' => 'Shifts must be sent as an array.',
-            'shifts.*.name.required' => 'Each shift must have a name.',
-            'shifts.*.capacity.integer' => 'Each shift capacity must be a number.',
-            'shifts.*.capacity.min' => 'Each shift capacity must be at least 1.',
-            'shifts.*.startDate.date' => 'Each shift start date must be a valid date.',
-            'shifts.*.endDate.date' => 'Each shift end date must be a valid date.',
-        ];
-    }
-
-    /**
-     * Normalize request payload.
-     * Handles JSON strings from FormData and cleans empty shift rows.
-     */
-    private function normalizePayload(Request $request): array
-    {
-        $payload = $request->all();
-
-        $jsonArrayFields = [
-            'objectives',
-            'modules',
-            'requirements',
-            'benefits',
-            'skills',
-            'tools',
-            'outcomes',
-            'shifts',
-        ];
-
-        foreach ($jsonArrayFields as $field) {
-            if (isset($payload[$field]) && is_string($payload[$field])) {
-                $decoded = json_decode($payload[$field], true);
-
-                if (json_last_error() === JSON_ERROR_NONE) {
-                    $payload[$field] = $decoded;
-                }
-            }
-        }
-
-        if (!isset($payload['shifts']) || $payload['shifts'] === null || $payload['shifts'] === '') {
-            $payload['shifts'] = [];
-        }
-
-        if (is_array($payload['shifts'])) {
-            $cleanShifts = [];
-
-            foreach ($payload['shifts'] as $shift) {
-                if (!is_array($shift)) {
-                    continue;
-                }
-
-                $name = isset($shift['name']) ? trim((string) $shift['name']) : '';
-
-                $isCompletelyEmpty =
-                    $name === '' &&
-                    empty($shift['capacity']) &&
-                    empty($shift['startDate']) &&
-                    empty($shift['endDate']) &&
-                    !isset($shift['isFull']);
-
-                if ($isCompletelyEmpty) {
-                    continue;
-                }
-
-                $cleanShifts[] = [
-                    'name' => $name,
-                    'isFull' => $this->toBoolean($shift['isFull'] ?? false),
-                    'capacity' => $this->toNullableInt($shift['capacity'] ?? null),
-                    'startDate' => $this->emptyToNull($shift['startDate'] ?? null),
-                    'endDate' => $this->emptyToNull($shift['endDate'] ?? null),
-                ];
-            }
-
-            $payload['shifts'] = array_values($cleanShifts);
-        }
-
-        return $payload;
-    }
-
-    /**
-     * Convert mixed value to boolean.
-     */
-    private function toBoolean($value): bool
-    {
-        if (is_bool($value)) {
-            return $value;
-        }
-
-        if (is_numeric($value)) {
-            return (bool) $value;
-        }
-
-        $value = strtolower((string) $value);
-
-        return in_array($value, ['1', 'true', 'yes', 'on'], true);
-    }
-
-    /**
-     * Convert empty string to null.
-     */
-    private function emptyToNull($value)
-    {
-        if ($value === '' || $value === null) {
-            return null;
-        }
-
-        return $value;
-    }
-
-    /**
-     * Convert value to nullable integer.
-     */
-    private function toNullableInt($value): ?int
-    {
-        if ($value === '' || $value === null) {
-            return null;
-        }
-
-        return (int) $value;
-    }
-
-    /**
-     * Save only fields that actually exist in the programs table.
-     */
-    private function filterOnlyExistingColumns(array $data): array
-    {
-        $tableColumns = Schema::getColumnListing((new Program())->getTable());
-
-        return collect($data)
-            ->only($tableColumns)
-            ->toArray();
-    }
-
-    /**
-     * Generate unique slug.
-     */
-    private function generateUniqueSlug(string $name, ?int $ignoreId = null): string
-    {
-        $baseSlug = Str::slug($name);
-        $slug = $baseSlug;
-        $counter = 1;
-
-        while (
-            Program::when($ignoreId, function ($query) use ($ignoreId) {
-                $query->where('id', '!=', $ignoreId);
-            })->where('slug', $slug)->exists()
-        ) {
-            $slug = $baseSlug . '-' . $counter;
-            $counter++;
-        }
-
-        return $slug;
     }
 }
