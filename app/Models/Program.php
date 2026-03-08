@@ -10,44 +10,46 @@ class Program extends Model
     use HasFactory;
 
     protected $fillable = [
-    'code',
-    'name',
-    'slug',
-    'badge',
-    'category',
-    'duration',
-    'level',
-    'format',
-    'status',
-    'instructor',
-    'students',
-    'start_date',
-    'end_date',
-    'image',
-    'intro',
-    'description',
-    'overview',
-    'icon_key',
-    'is_active',
-    'objectives',
-    'modules',
-    'skills',
-    'outcomes',
-    'tools',
-    'shifts',
-];
+        'code',
+        'name',
+        'slug',
+        'badge',
+        'category',
+        'duration',
+        'level',
+        'format',
+        'status',
+        'instructor',
+        'students',
+        'start_date',
+        'end_date',
+        'image',
+        'intro',
+        'description',
+        'overview',
+        'icon_key',
+        'is_active',
+        'objectives',
+        'modules',
+        'skills',
+        'outcomes',
+        'tools',
+        'experience_levels',
+        'shifts',
+    ];
 
-   protected $casts = [
-    'start_date' => 'date',
-    'end_date' => 'date',
-    'is_active' => 'boolean',
-    'objectives' => 'array',
-    'modules' => 'array',
-    'skills' => 'array',
-    'outcomes' => 'array',
-    'tools' => 'array',
-    'shifts' => 'array',
-];
+    protected $casts = [
+        'start_date' => 'date',
+        'end_date' => 'date',
+        'is_active' => 'boolean',
+        'objectives' => 'array',
+        'modules' => 'array',
+        'skills' => 'array',
+        'outcomes' => 'array',
+        'tools' => 'array',
+        'experience_levels' => 'array',
+        'shifts' => 'array',
+    ];
 
     public function getRouteKeyName(): string
     {
@@ -68,5 +70,10 @@ class Program extends Model
     public function toolItems()
     {
         return $this->hasMany(TrainingProgramTool::class, 'program_id')->orderBy('sort_order');
+    }
+
+    public function applications()
+    {
+        return $this->hasMany(ProgramApplication::class, 'program_id')->latest();
     }
 }
