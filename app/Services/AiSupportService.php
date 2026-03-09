@@ -122,11 +122,13 @@ class AiSupportService
     protected function loadKnowledgeDocuments(): array
     {
         $directories = [
+            resource_path('ai'),
             base_path('app/ai'),
             storage_path('app/ai'),
         ];
 
         $documents = [];
+        $loadedPaths = [];
 
         foreach ($directories as $directory) {
             if (!is_dir($directory)) {
@@ -140,6 +142,12 @@ class AiSupportService
             }
 
             foreach ($files as $file) {
+                $realPath = realpath($file) ?: $file;
+
+                if (in_array($realPath, $loadedPaths, true)) {
+                    continue;
+                }
+
                 $content = @file_get_contents($file);
 
                 if ($content === false || trim($content) === '') {
@@ -152,6 +160,8 @@ class AiSupportService
                     'content' => trim($content),
                     'path' => $file,
                 ];
+
+                $loadedPaths[] = $realPath;
             }
         }
 
