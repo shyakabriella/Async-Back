@@ -21,6 +21,11 @@ return [
     'resend' => [
         'key' => env('RESEND_API_KEY'),
     ],
+    
+   'gemini' => [
+    'key' => env('GEMINI_API_KEY'),
+    'model' => env('GEMINI_MODEL', 'gemini-2.5-flash'),
+],
 
     'ses' => [
         'key' => env('AWS_ACCESS_KEY_ID'),

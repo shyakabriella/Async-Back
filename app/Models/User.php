@@ -2,11 +2,13 @@
 
 namespace App\Models;
 
+use App\Models\Role;
+use App\Models\AgentPresence;
+use App\Models\ChatConversation;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
-use App\Models\Role;
 
 class User extends Authenticatable
 {
@@ -66,5 +68,21 @@ class User extends Authenticatable
     public function hasRole(string $slug): bool
     {
         return $this->roles()->where('slug', $slug)->exists();
+    }
+
+    /**
+     * Agent presence relationship
+     */
+    public function agentPresence()
+    {
+        return $this->hasOne(AgentPresence::class);
+    }
+
+    /**
+     * Conversations assigned to this agent
+     */
+    public function assignedConversations()
+    {
+        return $this->hasMany(ChatConversation::class, 'assigned_agent_id');
     }
 }
