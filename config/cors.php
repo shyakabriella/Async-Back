@@ -2,14 +2,17 @@
 
 return [
 
-    'paths' => ['api/*', 'sanctum/csrf-cookie'],
+    'paths' => [
+        'api/*',
+        'sanctum/csrf-cookie',
+        'broadcasting/auth',
+    ],
 
     'allowed_methods' => ['*'],
 
     'allowed_origins' => [
-        'https://www.asyncafrica.com',
         'https://asyncafrica.com',
-        
+        'https://www.asyncafrica.com',
     ],
 
     'allowed_origins_patterns' => [],
