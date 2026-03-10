@@ -5,7 +5,11 @@ namespace App\Http\Controllers\API;
 use App\Http\Controllers\Controller;
 use App\Models\Program;
 use App\Models\ProgramApplication;
+use App\Notifications\ApplicationApprovedNotification;
+use App\Notifications\ApplicationReceivedNotification;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Validator;
 
 class ProgramApplicationController extends Controller
@@ -54,37 +58,44 @@ class ProgramApplicationController extends Controller
      */
     public function store(Request $request)
     {
-        $validator = Validator::make($request->all(), [
-            'auth_provider' => 'nullable|string|max:50',
+        $validator = Validator::make(
+            $request->all(),
+            [
+                'auth_provider' => 'nullable|string|max:50',
 
-            'program_id' => 'required|exists:programs,id',
-            'shift_id' => 'nullable|string|max:255',
-            'experience_level' => 'nullable|string|max:255',
+                'program_id' => 'required|exists:programs,id',
+                'shift_id' => 'nullable|string|max:255',
+                'experience_level' => 'nullable|string|max:255',
 
-            'selected_skills' => 'nullable|array',
-            'selected_skills.*' => 'nullable|string|max:255',
+                'selected_skills' => 'nullable|array',
+                'selected_skills.*' => 'nullable|string|max:255',
 
-            'selected_tools' => 'nullable|array',
-            'selected_tools.*' => 'nullable|string|max:255',
+                'selected_tools' => 'nullable|array',
+                'selected_tools.*' => 'nullable|string|max:255',
 
-            'applicant.first_name' => 'required|string|max:255',
-            'applicant.last_name' => 'required|string|max:255',
-            'applicant.email' => 'required|email|max:255',
-            'applicant.phone' => 'required|string|max:255',
-            'applicant.country' => 'required|string|max:255',
-            'applicant.city' => 'nullable|string|max:255',
-            'applicant.date_of_birth' => 'nullable|date',
-            'applicant.gender' => 'nullable|string|max:255',
+                'applicant.first_name' => 'required|string|min:2|max:255',
+                'applicant.last_name' => 'required|string|min:2|max:255',
+                'applicant.email' => 'required|email:rfc|max:255',
+                'applicant.phone' => ['required', 'string', 'min:8', 'max:25', 'regex:/^[0-9+\-\s\(\)]+$/'],
+                'applicant.country' => 'required|string|max:255',
+                'applicant.city' => 'nullable|string|max:255',
+                'applicant.date_of_birth' => 'nullable|date|before:today',
+                'applicant.gender' => 'nullable|string|max:255',
 
-            'background.education_level' => 'nullable|string|max:255',
-            'background.school_name' => 'nullable|string|max:255',
-            'background.field_of_study' => 'nullable|string|max:255',
+                'background.education_level' => 'nullable|string|max:255',
+                'background.school_name' => 'nullable|string|max:255',
+                'background.field_of_study' => 'nullable|string|max:255',
 
-            'consents.agree_terms' => 'required|boolean',
-            'consents.agree_communication' => 'nullable|boolean',
+                'consents.agree_terms' => 'required|boolean',
+                'consents.agree_communication' => 'nullable|boolean',
 
-            'submitted_at' => 'nullable|date',
-        ]);
+                'submitted_at' => 'nullable|date',
+            ],
+            [
+                'applicant.phone.regex' => 'Phone number format is invalid.',
+                'applicant.date_of_birth.before' => 'Date of birth must be a date before today.',
+            ]
+        );
 
         $validator->after(function ($validator) use ($request) {
             $program = Program::find($request->program_id);
@@ -102,6 +113,11 @@ class ProgramApplicationController extends Controller
             $selectedSkills = $request->input('selected_skills', []);
             $selectedTools = $request->input('selected_tools', []);
             $experienceLevel = $request->input('experience_level');
+
+            $firstName = $request->input('applicant.first_name');
+            $lastName = $request->input('applicant.last_name');
+            $email = $request->input('applicant.email');
+            $phone = $request->input('applicant.phone');
 
             if ($shiftId) {
                 $matchedShift = collect($allowedShifts)->firstWhere('id', $shiftId);
@@ -150,6 +166,39 @@ class ProgramApplicationController extends Controller
                     'You must agree to the terms before submitting.'
                 );
             }
+
+            $duplicates = $this->findDuplicateApplicantFields(
+                (int) $program->id,
+                $email,
+                $phone,
+                $firstName,
+                $lastName
+            );
+
+            if ($duplicates['email']) {
+                $validator->errors()->add(
+                    'applicant.email',
+                    'This email has already been used to apply for this program.'
+                );
+            }
+
+            if ($duplicates['phone']) {
+                $validator->errors()->add(
+                    'applicant.phone',
+                    'This phone number has already been used to apply for this program.'
+                );
+            }
+
+            if ($duplicates['full_name']) {
+                $validator->errors()->add(
+                    'applicant.first_name',
+                    'An application with the same first name and last name already exists for this program.'
+                );
+                $validator->errors()->add(
+                    'applicant.last_name',
+                    'An application with the same first name and last name already exists for this program.'
+                );
+            }
         });
 
         if ($validator->fails()) {
@@ -172,23 +221,23 @@ class ProgramApplicationController extends Controller
             'shift_id' => $request->shift_id,
             'shift_name' => $selectedShift['name'] ?? null,
             'experience_level' => $request->experience_level,
-            'selected_skills' => array_values($request->input('selected_skills', [])),
-            'selected_tools' => array_values($request->input('selected_tools', [])),
+            'selected_skills' => $this->normalizeStringArray($request->input('selected_skills', [])),
+            'selected_tools' => $this->normalizeStringArray($request->input('selected_tools', [])),
 
-            'auth_provider' => $request->input('auth_provider', 'manual'),
+            'auth_provider' => trim((string) $request->input('auth_provider', 'manual')),
 
-            'first_name' => $request->input('applicant.first_name'),
-            'last_name' => $request->input('applicant.last_name'),
-            'email' => $request->input('applicant.email'),
-            'phone' => $request->input('applicant.phone'),
-            'country' => $request->input('applicant.country'),
-            'city' => $request->input('applicant.city'),
+            'first_name' => $this->cleanValue($request->input('applicant.first_name')),
+            'last_name' => $this->cleanValue($request->input('applicant.last_name')),
+            'email' => $this->normalizeEmail($request->input('applicant.email')),
+            'phone' => $this->cleanPhoneForStorage($request->input('applicant.phone')),
+            'country' => $this->cleanValue($request->input('applicant.country')),
+            'city' => $this->cleanValue($request->input('applicant.city')),
             'date_of_birth' => $request->input('applicant.date_of_birth'),
-            'gender' => $request->input('applicant.gender'),
+            'gender' => $this->cleanValue($request->input('applicant.gender')),
 
-            'education_level' => $request->input('background.education_level'),
-            'school_name' => $request->input('background.school_name'),
-            'field_of_study' => $request->input('background.field_of_study'),
+            'education_level' => $this->cleanValue($request->input('background.education_level')),
+            'school_name' => $this->cleanValue($request->input('background.school_name')),
+            'field_of_study' => $this->cleanValue($request->input('background.field_of_study')),
 
             'agree_terms' => $request->boolean('consents.agree_terms'),
             'agree_communication' => $request->has('consents.agree_communication')
@@ -203,10 +252,17 @@ class ProgramApplicationController extends Controller
             ],
         ]);
 
+        $application = $application->fresh('program');
+
+        $this->sendNotificationSafely(
+            $application->email,
+            new ApplicationReceivedNotification($application)
+        );
+
         return response()->json([
             'success' => true,
             'message' => 'Application submitted successfully.',
-            'data' => $this->formatApplication($application->fresh('program')),
+            'data' => $this->formatApplication($application),
         ], 201);
     }
 
@@ -236,7 +292,7 @@ class ProgramApplicationController extends Controller
      */
     public function update(Request $request, string $id)
     {
-        $application = ProgramApplication::find($id);
+        $application = ProgramApplication::with('program')->find($id);
 
         if (!$application) {
             return response()->json([
@@ -247,7 +303,7 @@ class ProgramApplicationController extends Controller
 
         $validator = Validator::make($request->all(), [
             'status' => 'nullable|in:Pending,Reviewed,Accepted,Rejected,Waitlisted',
-            'admin_note' => 'nullable|string',
+            'admin_note' => 'nullable|string|max:5000',
         ]);
 
         if ($validator->fails()) {
@@ -258,15 +314,26 @@ class ProgramApplicationController extends Controller
             ], 422);
         }
 
+        $oldStatus = $application->status;
+
         $application->update([
             'status' => $request->input('status', $application->status),
             'admin_note' => $request->input('admin_note', $application->admin_note),
         ]);
 
+        $application = $application->fresh('program');
+
+        if ($oldStatus !== 'Accepted' && $application->status === 'Accepted') {
+            $this->sendNotificationSafely(
+                $application->email,
+                new ApplicationApprovedNotification($application)
+            );
+        }
+
         return response()->json([
             'success' => true,
             'message' => 'Application updated successfully.',
-            'data' => $this->formatApplication($application->fresh('program')),
+            'data' => $this->formatApplication($application),
         ], 200);
     }
 
@@ -290,6 +357,81 @@ class ProgramApplicationController extends Controller
             'success' => true,
             'message' => 'Application deleted successfully.',
         ], 200);
+    }
+
+    /**
+     * Safely send notification without breaking request if mail fails.
+     */
+    private function sendNotificationSafely(string $email, $notification): void
+    {
+        try {
+            Notification::route('mail', $email)->notify($notification);
+        } catch (\Throwable $e) {
+            Log::error('Failed to send application notification.', [
+                'email' => $email,
+                'notification' => get_class($notification),
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Find duplicate applicant details for the same program.
+     */
+    private function findDuplicateApplicantFields(
+        int $programId,
+        ?string $email,
+        ?string $phone,
+        ?string $firstName,
+        ?string $lastName
+    ): array {
+        $normalizedEmail = $this->normalizeEmail($email);
+        $normalizedPhone = $this->normalizePhone($phone);
+        $normalizedFirstName = $this->normalizeText($firstName);
+        $normalizedLastName = $this->normalizeText($lastName);
+
+        $duplicates = [
+            'email' => false,
+            'phone' => false,
+            'full_name' => false,
+        ];
+
+        $applications = ProgramApplication::where('program_id', $programId)
+            ->get(['email', 'phone', 'first_name', 'last_name']);
+
+        foreach ($applications as $application) {
+            if (
+                !$duplicates['email'] &&
+                $normalizedEmail !== '' &&
+                $this->normalizeEmail($application->email) === $normalizedEmail
+            ) {
+                $duplicates['email'] = true;
+            }
+
+            if (
+                !$duplicates['phone'] &&
+                $normalizedPhone !== '' &&
+                $this->normalizePhone($application->phone) === $normalizedPhone
+            ) {
+                $duplicates['phone'] = true;
+            }
+
+            if (
+                !$duplicates['full_name'] &&
+                $normalizedFirstName !== '' &&
+                $normalizedLastName !== '' &&
+                $this->normalizeText($application->first_name) === $normalizedFirstName &&
+                $this->normalizeText($application->last_name) === $normalizedLastName
+            ) {
+                $duplicates['full_name'] = true;
+            }
+
+            if ($duplicates['email'] && $duplicates['phone'] && $duplicates['full_name']) {
+                break;
+            }
+        }
+
+        return $duplicates;
     }
 
     /**
@@ -423,5 +565,88 @@ class ProgramApplicationController extends Controller
             'created_at' => optional($application->created_at)->toISOString(),
             'updated_at' => optional($application->updated_at)->toISOString(),
         ];
+    }
+
+    /**
+     * Normalize email for comparison/storage.
+     */
+    private function normalizeEmail(?string $value): string
+    {
+        return mb_strtolower(trim((string) $value));
+    }
+
+    /**
+     * Normalize general text for comparison.
+     */
+    private function normalizeText(?string $value): string
+    {
+        $value = trim((string) $value);
+        $value = preg_replace('/\s+/', ' ', $value);
+
+        return mb_strtolower($value);
+    }
+
+    /**
+     * Normalize phone for duplicate comparison.
+     */
+    private function normalizePhone(?string $value): string
+    {
+        return preg_replace('/\D+/', '', (string) $value);
+    }
+
+    /**
+     * Clean regular value before saving.
+     */
+    private function cleanValue($value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        $value = trim((string) $value);
+        $value = preg_replace('/\s+/', ' ', $value);
+
+        return $value === '' ? null : $value;
+    }
+
+    /**
+     * Clean phone before saving.
+     */
+    private function cleanPhoneForStorage($value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        $value = trim((string) $value);
+        $value = preg_replace('/\s+/', ' ', $value);
+
+        return $value === '' ? null : $value;
+    }
+
+    /**
+     * Clean string array values.
+     */
+    private function normalizeStringArray($values): array
+    {
+        if (!is_array($values)) {
+            return [];
+        }
+
+        $cleaned = [];
+
+        foreach ($values as $value) {
+            if (!is_string($value)) {
+                continue;
+            }
+
+            $value = trim($value);
+
+            if ($value !== '') {
+                $cleaned[] = $value;
+            }
+        }
+
+        return array_values(array_unique($cleaned));
     }
 }

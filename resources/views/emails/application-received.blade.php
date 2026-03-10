@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Application Received</title>
+</head>
+<body style="margin:0; padding:0; background-color:#f4f6f8; font-family: Arial, Helvetica, sans-serif; color:#222;">
+    @php
+        $logoPath = public_path('images/logo.png');
+    @endphp
+
+    <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f6f8; padding:30px 15px;">
+        <tr>
+            <td align="center">
+                <table width="700" cellpadding="0" cellspacing="0" style="max-width:700px; width:100%; background:#ffffff; border-radius:10px; overflow:hidden; border:1px solid #e5e7eb;">
+                    
+                    <!-- Header -->
+                    <tr>
+                        <td style="padding:30px 30px 20px 30px; border-bottom:1px solid #e5e7eb;">
+                            <table width="100%" cellpadding="0" cellspacing="0">
+                                <tr>
+                                    <td style="vertical-align:middle; width:110px;">
+                                        @if(file_exists($logoPath))
+                                            <img src="{{ $message->embed($logoPath) }}" alt="{{ $companyName }} Logo" style="max-width:80px; height:auto; display:block;">
+                                        @else
+                                            <div style="width:80px; height:80px; border:1px solid #d1d5db; text-align:center; line-height:80px; font-size:12px; color:#6b7280;">
+                                                Logo
+                                            </div>
+                                        @endif
+                                    </td>
+                                    <td style="vertical-align:middle;">
+                                        <h2 style="margin:0; font-size:24px; color:#111827;">{{ $companyName }}</h2>
+                                        <p style="margin:6px 0 0 0; font-size:14px; color:#6b7280;">
+                                            Application Receipt Notification
+                                        </p>
+                                    </td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>
+
+                    <!-- Body -->
+                    <tr>
+                        <td style="padding:30px;">
+                            <p style="margin:0 0 18px 0; font-size:15px;">Dear <strong>{{ $fullName }}</strong>,</p>
+
+                            <p style="margin:0 0 18px 0; font-size:15px; line-height:1.7;">
+                                Thank you for applying. We are pleased to inform you that your application has been successfully
+                                <strong>received</strong>.
+                            </p>
+
+                            <table width="100%" cellpadding="0" cellspacing="0" style="margin:20px 0; border-collapse:collapse;">
+                                <tr>
+                                    <td style="padding:12px; border:1px solid #e5e7eb; background:#f9fafb; width:180px;"><strong>Program</strong></td>
+                                    <td style="padding:12px; border:1px solid #e5e7eb;">{{ $programTitle }}</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding:12px; border:1px solid #e5e7eb; background:#f9fafb;"><strong>Shift</strong></td>
+                                    <td style="padding:12px; border:1px solid #e5e7eb;">{{ $shiftName }}</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding:12px; border:1px solid #e5e7eb; background:#f9fafb;"><strong>Status</strong></td>
+                                    <td style="padding:12px; border:1px solid #e5e7eb; color:#b45309;"><strong>Pending Review</strong></td>
+                                </tr>
+                            </table>
+
+                            <p style="margin:0 0 18px 0; font-size:15px; line-height:1.7;">
+                                Our team will review your application carefully and contact you with the next steps.
+                            </p>
+
+                            <p style="margin:0 0 18px 0; font-size:15px; line-height:1.7;">
+                                Please keep checking your email for future updates.
+                            </p>
+
+                            <p style="margin:30px 0 0 0; font-size:15px;">
+                                Best regards,<br>
+                                <strong>{{ $companyName }}</strong>
+                            </p>
+                        </td>
+                    </tr>
+
+                    <!-- Footer -->
+                    <tr>
+                        <td style="padding:20px 30px; background:#f9fafb; border-top:1px solid #e5e7eb; font-size:13px; color:#6b7280; text-align:center;">
+                            <div>{{ $companyName }}</div>
+                            <div style="margin-top:6px;">Email: {{ $companyEmail }}</div>
+                            <div style="margin-top:6px;">Website: https://www.asyncafrica.com</div>
+                        </td>
+                    </tr>
+
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>
