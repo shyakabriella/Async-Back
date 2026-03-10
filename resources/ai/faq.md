@@ -7,6 +7,7 @@
 ### 1) What is AsyncAfrica?
 AsyncAfrica is a technology company that delivers modern technology solutions and practical training. Public website messaging highlights software development, networking, AI, IoT, robotics, IT consulting, and professional technology training.
 
+
 ### 2) What services does AsyncAfrica offer?
 AsyncAfrica publicly presents services and expertise in:
 - Software Development

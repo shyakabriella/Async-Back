@@ -19,8 +19,10 @@ class AiSupportService
             ->values();
 
         $contents = $this->buildContents($history);
-        $knowledgeDocuments = $this->loadKnowledgeDocuments();
-        $combinedKnowledge = $this->buildCombinedKnowledge($knowledgeDocuments);
+
+        $allKnowledgeDocuments = $this->loadKnowledgeDocuments();
+        $publicKnowledgeDocuments = $this->filterPublicKnowledgeDocuments($allKnowledgeDocuments);
+        $combinedKnowledge = $this->buildCombinedKnowledge($publicKnowledgeDocuments);
 
         $replyText = '';
         $usedLocalFallback = false;
@@ -46,7 +48,7 @@ class AiSupportService
                             ],
                         ],
                         'generationConfig' => [
-                            'temperature' => 0.5,
+                            'temperature' => 0.4,
                             'maxOutputTokens' => 500,
                         ],
                     ]
@@ -61,11 +63,11 @@ class AiSupportService
                 'conversation_id' => $conversation->id,
             ]);
 
-            $replyText = $this->buildLocalFallbackReply($conversation, $knowledgeDocuments);
+            $replyText = $this->buildLocalFallbackReply($conversation, $publicKnowledgeDocuments);
             $usedLocalFallback = true;
         }
 
-        $replyText = $this->postProcessReply($replyText, $conversation, $knowledgeDocuments);
+        $replyText = $this->postProcessReply($replyText, $conversation, $publicKnowledgeDocuments);
 
         if (!$replyText) {
             $replyText = $this->buildHumanHandoffReply(
@@ -82,6 +84,10 @@ class AiSupportService
                 'provider' => 'gemini',
                 'model' => config('services.gemini.model', 'gemini-2.5-flash'),
                 'used_local_fallback' => $usedLocalFallback,
+                'knowledge_documents_count' => count($allKnowledgeDocuments),
+                'public_knowledge_documents_count' => count($publicKnowledgeDocuments),
+                'knowledge_document_names' => array_map(fn ($doc) => $doc['name'], $allKnowledgeDocuments),
+                'public_knowledge_document_names' => array_map(fn ($doc) => $doc['name'], $publicKnowledgeDocuments),
             ],
         ]);
     }
@@ -122,46 +128,57 @@ class AiSupportService
     protected function loadKnowledgeDocuments(): array
     {
         $directories = [
+            app_path('ai'),
             resource_path('ai'),
-            base_path('app/ai'),
             storage_path('app/ai'),
         ];
 
         $documents = [];
-        $loadedPaths = [];
+        $seen = [];
 
         foreach ($directories as $directory) {
             if (!is_dir($directory)) {
+                Log::info('AI knowledge directory not found', [
+                    'directory' => $directory,
+                ]);
                 continue;
             }
 
             $files = glob($directory . DIRECTORY_SEPARATOR . '*.md');
+
+            Log::info('AI knowledge scan', [
+                'directory' => $directory,
+                'files_found' => $files ?: [],
+            ]);
 
             if (!$files) {
                 continue;
             }
 
             foreach ($files as $file) {
-                $realPath = realpath($file) ?: $file;
+                $realPath = realpath($file);
 
-                if (in_array($realPath, $loadedPaths, true)) {
+                if (!$realPath || isset($seen[$realPath])) {
                     continue;
                 }
 
-                $content = @file_get_contents($file);
+                $content = @file_get_contents($realPath);
 
                 if ($content === false || trim($content) === '') {
+                    Log::warning('AI knowledge file unreadable or empty', [
+                        'file' => $realPath,
+                    ]);
                     continue;
                 }
 
                 $documents[] = [
-                    'name' => basename($file),
-                    'title' => $this->makeTitleFromFilename(basename($file)),
+                    'name' => basename($realPath),
+                    'title' => $this->makeTitleFromFilename(basename($realPath)),
                     'content' => trim($content),
-                    'path' => $file,
+                    'path' => $realPath,
                 ];
 
-                $loadedPaths[] = $realPath;
+                $seen[$realPath] = true;
             }
         }
 
@@ -169,7 +186,31 @@ class AiSupportService
             return strcmp($a['name'], $b['name']);
         });
 
+        Log::info('AI knowledge documents loaded', [
+            'count' => count($documents),
+            'documents' => array_map(fn ($doc) => $doc['name'], $documents),
+        ]);
+
         return $documents;
+    }
+
+    protected function filterPublicKnowledgeDocuments(array $documents): array
+    {
+        $excluded = [
+            'bot_fallback_rules.md',
+            'policies.md',
+        ];
+
+        $filtered = array_values(array_filter($documents, function ($document) use ($excluded) {
+            return !in_array(strtolower($document['name']), $excluded, true);
+        }));
+
+        Log::info('AI public knowledge documents filtered', [
+            'count' => count($filtered),
+            'documents' => array_map(fn ($doc) => $doc['name'], $filtered),
+        ]);
+
+        return $filtered;
     }
 
     protected function makeTitleFromFilename(string $filename): string
@@ -227,18 +268,17 @@ class AiSupportService
             return $this->buildHumanHandoffReply($latestCustomerMessage, true);
         }
 
-        $bestMatch = $this->findBestMatchingDocumentSection($latestCustomerMessage, $documents);
+        $trainingReply = $this->buildTrainingSpecificReply($latestCustomerMessage, $documents);
+
+        if ($trainingReply) {
+            return $trainingReply;
+        }
+
+        $rankedDocuments = $this->rankDocumentsForMessage($latestCustomerMessage, $documents);
+        $bestMatch = $this->findBestMatchingDocumentSection($latestCustomerMessage, $rankedDocuments);
 
         if ($bestMatch && $bestMatch['score'] > 0) {
-            $intro = "Here is what I found";
-
-            if (!empty($bestMatch['section_title']) && $bestMatch['section_title'] !== $bestMatch['document_title']) {
-                $intro .= " about {$bestMatch['section_title']}";
-            }
-
-            return $intro . ":\n\n" .
-                $bestMatch['excerpt'] .
-                "\n\nFor anything more specific, our human support team can assist you directly.";
+            return $this->formatMatchedReply($bestMatch);
         }
 
         if ($this->looksLikeBusinessQuestion($latestCustomerMessage, $documents)) {
@@ -246,6 +286,178 @@ class AiSupportService
         }
 
         return 'Thanks for your question. I can usually help with general guidance, but the AI assistant is temporarily unavailable right now. Please try again shortly, or our human support team can assist you directly.';
+    }
+
+    protected function buildTrainingSpecificReply(string $message, array $documents): ?string
+    {
+        $message = mb_strtolower($message);
+
+        $trainingDocument = $this->findDocumentByName($documents, 'training.md');
+
+        if (!$trainingDocument) {
+            return null;
+        }
+
+        $isTrainingRelated =
+            str_contains($message, 'training') ||
+            str_contains($message, 'internship') ||
+            str_contains($message, 'internaship') ||
+            str_contains($message, 'practical') ||
+            str_contains($message, 'certificate') ||
+            str_contains($message, 'register') ||
+            str_contains($message, 'registration') ||
+            str_contains($message, 'fee') ||
+            str_contains($message, 'cost') ||
+            str_contains($message, 'pay') ||
+            str_contains($message, 'payment') ||
+            str_contains($message, 'mtn') ||
+            str_contains($message, 'mobile money');
+
+        if (!$isTrainingRelated) {
+            return null;
+        }
+
+        if (
+            str_contains($message, 'how to pay') ||
+            str_contains($message, 'payment method') ||
+            str_contains($message, 'where can i pay') ||
+            str_contains($message, 'how can i pay') ||
+            str_contains($message, 'pay')
+        ) {
+            return 'You can pay for AsyncAfrica practical training using **MTN Mobile Money**. Please register first, then complete payment within **2 days**. If payment is not made within 2 days, the payment becomes invalid and you will need to register again. If you need payment assistance, our human support team can help you directly.';
+        }
+
+        if (
+            str_contains($message, 'fee') ||
+            str_contains($message, 'cost') ||
+            str_contains($message, 'price') ||
+            str_contains($message, 'how much')
+        ) {
+            return 'The internship training fee is **30,000 RWF**. Payment is made through **MTN Mobile Money** after registration, and it should be completed within **2 days**.';
+        }
+
+        if (
+            str_contains($message, 'certificate') ||
+            str_contains($message, 'what do i get') ||
+            str_contains($message, 'after finishing') ||
+            str_contains($message, 'after completion')
+        ) {
+            return 'After successful completion of the internship training, the learner gains practical skills and receives a **certificate**.';
+        }
+
+        if (
+            str_contains($message, 'duration') ||
+            str_contains($message, 'how long') ||
+            str_contains($message, 'weeks') ||
+            str_contains($message, 'period')
+        ) {
+            return 'The internship training program lasts **4 weeks**.';
+        }
+
+        if (
+            str_contains($message, 'register') ||
+            str_contains($message, 'registration') ||
+            str_contains($message, 'after registration')
+        ) {
+            return 'You need to **register first**. After registration, payment must be completed within **2 days** using **MTN Mobile Money**. If payment is not completed within 2 days, it becomes invalid and you will need to register again.';
+        }
+
+        if (
+            str_contains($message, 'what training') ||
+            str_contains($message, 'which training') ||
+            str_contains($message, 'do you offer') ||
+            str_contains($message, 'training areas')
+        ) {
+            return 'AsyncAfrica offers training in **Software Development** and **Network and Internet Technology**. We also offer a **4-week internship training program** with practical skill development and a certificate after successful completion.';
+        }
+
+        return null;
+    }
+
+    protected function findDocumentByName(array $documents, string $filename): ?array
+    {
+        foreach ($documents as $document) {
+            if (mb_strtolower($document['name']) === mb_strtolower($filename)) {
+                return $document;
+            }
+        }
+
+        return null;
+    }
+
+    protected function rankDocumentsForMessage(string $message, array $documents): array
+    {
+        $message = mb_strtolower($message);
+
+        foreach ($documents as &$document) {
+            $boost = 0;
+            $name = mb_strtolower($document['name']);
+            $title = mb_strtolower($document['title']);
+            $content = mb_strtolower($document['content']);
+
+            if (
+                str_contains($message, 'training') ||
+                str_contains($message, 'internship') ||
+                str_contains($message, 'internaship') ||
+                str_contains($message, 'certificate') ||
+                str_contains($message, 'payment') ||
+                str_contains($message, 'pay') ||
+                str_contains($message, 'mtn') ||
+                str_contains($message, 'mobile money') ||
+                str_contains($message, 'fee') ||
+                str_contains($message, 'register') ||
+                str_contains($message, 'registration')
+            ) {
+                if (str_contains($name, 'training')) {
+                    $boost += 100;
+                }
+                if (str_contains($title, 'training')) {
+                    $boost += 70;
+                }
+            }
+
+            if (
+                str_contains($message, 'service') ||
+                str_contains($message, 'services') ||
+                str_contains($message, 'software development') ||
+                str_contains($message, 'network') ||
+                str_contains($message, 'networking')
+            ) {
+                if (str_contains($name, 'services')) {
+                    $boost += 80;
+                }
+                if (str_contains($title, 'services')) {
+                    $boost += 60;
+                }
+            }
+
+            if (
+                str_contains($message, 'what is asyncafrica') ||
+                str_contains($message, 'who is asyncafrica') ||
+                str_contains($message, 'about asyncafrica') ||
+                str_contains($message, 'asyncafrica')
+            ) {
+                if (str_contains($name, 'business_knowledge')) {
+                    $boost += 90;
+                }
+                if (str_contains($title, 'business knowledge')) {
+                    $boost += 70;
+                }
+            }
+
+            if (str_contains($content, $message)) {
+                $boost += 50;
+            }
+
+            $document['match_boost'] = $boost;
+        }
+        unset($document);
+
+        usort($documents, function ($a, $b) {
+            return ($b['match_boost'] ?? 0) <=> ($a['match_boost'] ?? 0);
+        });
+
+        return $documents;
     }
 
     protected function findBestMatchingDocumentSection(string $message, array $documents): ?array
@@ -278,11 +490,21 @@ class AiSupportService
                     $section['content']
                 );
 
-                $score = 0;
+                $score = (int) ($document['match_boost'] ?? 0);
 
                 foreach ($keywords as $keyword) {
                     if (str_contains($haystack, $keyword)) {
-                        $score++;
+                        $score += 10;
+                    }
+                }
+
+                if (!empty($section['title']) && str_contains(mb_strtolower($section['title']), mb_strtolower($message))) {
+                    $score += 40;
+                }
+
+                foreach ($keywords as $keyword) {
+                    if (!empty($section['title']) && str_contains(mb_strtolower($section['title']), $keyword)) {
+                        $score += 15;
                     }
                 }
 
@@ -290,8 +512,9 @@ class AiSupportService
                     $bestScore = $score;
                     $bestMatch = [
                         'document_title' => $document['title'],
+                        'document_name' => $document['name'],
                         'section_title' => $section['title'],
-                        'excerpt' => $this->makeExcerpt($section['content'], 500),
+                        'excerpt' => $this->makeExcerpt($section['content'], 700),
                         'score' => $score,
                     ];
                 }
@@ -299,6 +522,23 @@ class AiSupportService
         }
 
         return $bestScore > 0 ? $bestMatch : null;
+    }
+
+    protected function formatMatchedReply(array $bestMatch): string
+    {
+        $sectionTitle = trim((string) ($bestMatch['section_title'] ?? ''));
+        $documentTitle = trim((string) ($bestMatch['document_title'] ?? ''));
+        $excerpt = trim((string) ($bestMatch['excerpt'] ?? ''));
+
+        if ($excerpt === '') {
+            return 'Thanks for your question. A human support team member can assist you directly with the exact details for this request.';
+        }
+
+        if ($sectionTitle !== '' && mb_strtolower($sectionTitle) !== mb_strtolower($documentTitle)) {
+            return "Here is what I found about {$sectionTitle}:\n\n{$excerpt}\n\nIf you need more details, our human support team can assist you directly.";
+        }
+
+        return "Here is what I found:\n\n{$excerpt}\n\nIf you need more details, our human support team can assist you directly.";
     }
 
     protected function parseMarkdownSections(string $markdown): array
@@ -350,6 +590,7 @@ class AiSupportService
             'who', 'was', 'were', 'has', 'had', 'get', 'got', 'may', 'able',
             'is', 'to', 'of', 'in', 'on', 'at', 'a', 'an', 'it', 'we', 'i',
             'me', 'my', 'do', 'does', 'did', 'am', 'be', 'or', 'if', 'by',
+            'tell', 'more', 'info', 'information', 'those',
         ];
 
         $keywords = [];
@@ -369,9 +610,10 @@ class AiSupportService
         return array_values(array_unique($keywords));
     }
 
-    protected function makeExcerpt(string $text, int $limit = 500): string
+    protected function makeExcerpt(string $text, int $limit = 700): string
     {
-        $text = trim(preg_replace('/\n{3,}/', "\n\n", $text));
+        $text = trim((string) $text);
+        $text = preg_replace('/\n{3,}/', "\n\n", $text);
 
         if (mb_strlen($text) <= $limit) {
             return $text;

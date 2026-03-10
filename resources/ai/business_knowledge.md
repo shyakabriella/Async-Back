@@ -182,6 +182,8 @@ This document was based on publicly visible website messaging that describes Asy
 - a business serving organizations and innovators in Africa,
 - a company active in software development, networking, AI, IoT, robotics, IT consulting, and professional training.
 
+
+
 It also reflects public service-page wording that states:
 - software development helps businesses and institutions improve operations, automate work, and deliver better digital services,
 - IT consulting helps clients plan, improve, and implement technology solutions for growth and efficiency,

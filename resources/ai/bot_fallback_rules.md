@@ -125,6 +125,8 @@ User: "Can I pay after 5 days instead of 2 days?"
 Bot:
 "The current guidance says payment should be completed within 2 days after registration. For any exception or special approval, please contact our support team for confirmation."
 
+
+
 ### Example 4: Networking help
 User: "What is a router?"
 Bot:

@@ -21,6 +21,7 @@ class Program extends Model
         'status',
         'instructor',
         'students',
+        'price',
         'start_date',
         'end_date',
         'image',
@@ -40,6 +41,7 @@ class Program extends Model
 
     protected $casts = [
         'students' => 'integer',
+        'price' => 'decimal:2',
         'start_date' => 'date:Y-m-d',
         'end_date' => 'date:Y-m-d',
         'is_active' => 'boolean',

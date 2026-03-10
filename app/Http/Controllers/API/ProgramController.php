@@ -63,6 +63,7 @@ class ProgramController extends Controller
             'status' => $data['status'],
             'instructor' => $data['instructor'],
             'students' => $data['students'] ?? 0,
+            'price' => $data['price'] ?? 0,
             'start_date' => $data['start_date'],
             'end_date' => $data['end_date'] ?? null,
             'image' => $data['image'] ?? null,
@@ -152,6 +153,7 @@ class ProgramController extends Controller
             'status' => $data['status'] ?? $program->status,
             'instructor' => $data['instructor'] ?? $program->instructor,
             'students' => array_key_exists('students', $data) ? $data['students'] : $program->students,
+            'price' => array_key_exists('price', $data) ? $data['price'] : $program->price,
             'start_date' => $data['start_date'] ?? $program->start_date,
             'end_date' => array_key_exists('end_date', $data) ? $data['end_date'] : $program->end_date,
             'image' => array_key_exists('image', $data) ? $data['image'] : $program->image,
@@ -215,6 +217,7 @@ class ProgramController extends Controller
             'status' => 'required|in:Active,Draft,Archived',
             'instructor' => 'required|string|max:255',
             'students' => 'nullable|integer|min:0',
+            'price' => 'required|numeric|min:0',
             'start_date' => 'required|date',
             'end_date' => 'nullable|date|after_or_equal:start_date',
             'image' => 'nullable|string',
@@ -258,6 +261,7 @@ class ProgramController extends Controller
             'status' => 'sometimes|required|in:Active,Draft,Archived',
             'instructor' => 'sometimes|required|string|max:255',
             'students' => 'nullable|integer|min:0',
+            'price' => 'nullable|numeric|min:0',
             'start_date' => 'sometimes|required|date',
             'end_date' => 'nullable|date',
             'image' => 'nullable|string',
@@ -462,6 +466,8 @@ class ProgramController extends Controller
                 $fullShiftCount++;
             }
         }
+
+        $data['price'] = isset($data['price']) ? (float) $data['price'] : 0;
 
         $data['shifts'] = $shifts;
         $data['shift_summary'] = [
