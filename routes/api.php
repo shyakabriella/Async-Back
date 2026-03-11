@@ -4,6 +4,7 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\API\RegisterController;
 use App\Http\Controllers\API\ProgramController;
 use App\Http\Controllers\API\SupportChatController;
+use App\Http\Controllers\API\AttendanceController;
 use App\Http\Controllers\API\TrainingProgramController;
 use App\Http\Controllers\API\ProgramApplicationController;
 
@@ -32,6 +33,13 @@ Route::get('programs-test', function () {
 Route::apiResource('programs', ProgramController::class)->only(['index', 'show']);
 Route::apiResource('training-programs', TrainingProgramController::class)->only(['index', 'show']);
 
+/*
+|--------------------------------------------------------------------------
+| Public curriculum routes
+|--------------------------------------------------------------------------
+*/
+Route::get('programs/{program}/curriculum', [ProgramController::class, 'curriculumIndex']);
+
 // Student submits application
 Route::post('applications', [ProgramApplicationController::class, 'store']);
 
@@ -56,12 +64,33 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::apiResource('programs', ProgramController::class)->except(['index', 'show']);
     Route::apiResource('training-programs', TrainingProgramController::class)->except(['index', 'show']);
 
-    // Admin manages applications
+    /*
+    |--------------------------------------------------------------------------
+    | Protected curriculum routes
+    |--------------------------------------------------------------------------
+    */
+    Route::post('programs/{program}/curriculum', [ProgramController::class, 'curriculumStore']);
+    Route::put('programs/{program}/curriculum/{curriculumId}', [ProgramController::class, 'curriculumUpdate']);
+    Route::patch('programs/{program}/curriculum/{curriculumId}', [ProgramController::class, 'curriculumUpdate']);
+    Route::delete('programs/{program}/curriculum/{curriculumId}', [ProgramController::class, 'curriculumDestroy']);
+
+    /*
+    |--------------------------------------------------------------------------
+    | Admin manages applications
+    |--------------------------------------------------------------------------
+    */
     Route::get('applications', [ProgramApplicationController::class, 'index']);
     Route::get('applications/{id}', [ProgramApplicationController::class, 'show']);
     Route::patch('applications/{id}', [ProgramApplicationController::class, 'update']);
     Route::put('applications/{id}', [ProgramApplicationController::class, 'update']);
     Route::delete('applications/{id}', [ProgramApplicationController::class, 'destroy']);
+
+    /*
+    |--------------------------------------------------------------------------
+    | Attendance routes
+    |--------------------------------------------------------------------------
+    */
+    Route::apiResource('attendances', AttendanceController::class);
 
     /*
     |--------------------------------------------------------------------------

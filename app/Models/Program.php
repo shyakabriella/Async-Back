@@ -32,6 +32,7 @@ class Program extends Model
         'is_active',
         'objectives',
         'modules',
+        'curriculum',
         'skills',
         'outcomes',
         'tools',
@@ -47,6 +48,7 @@ class Program extends Model
         'is_active' => 'boolean',
         'objectives' => 'array',
         'modules' => 'array',
+        'curriculum' => 'array',
         'skills' => 'array',
         'outcomes' => 'array',
         'tools' => 'array',
@@ -54,18 +56,11 @@ class Program extends Model
         'shifts' => 'array',
     ];
 
-    /**
-     * Use ID for route model binding because your API calls /programs/1
-     */
     public function getRouteKeyName(): string
     {
         return 'id';
     }
 
-    /**
-     * Normalize shifts before save.
-     * This helps when shifts come as JSON string or array.
-     */
     public function setShiftsAttribute($value): void
     {
         $this->attributes['shifts'] = $this->normalizeJsonArray($value);
@@ -79,6 +74,11 @@ class Program extends Model
     public function setModulesAttribute($value): void
     {
         $this->attributes['modules'] = $this->normalizeJsonArray($value);
+    }
+
+    public function setCurriculumAttribute($value): void
+    {
+        $this->attributes['curriculum'] = $this->normalizeJsonArray($value);
     }
 
     public function setSkillsAttribute($value): void
@@ -101,9 +101,6 @@ class Program extends Model
         $this->attributes['experience_levels'] = $this->normalizeJsonArray($value);
     }
 
-    /**
-     * Convert empty dates to null.
-     */
     public function setStartDateAttribute($value): void
     {
         $this->attributes['start_date'] = $value ?: null;
@@ -114,9 +111,6 @@ class Program extends Model
         $this->attributes['end_date'] = $value ?: null;
     }
 
-    /**
-     * Relationships
-     */
     public function skillItems()
     {
         return $this->hasMany(TrainingProgramSkill::class, 'program_id')->orderBy('sort_order');
@@ -137,9 +131,6 @@ class Program extends Model
         return $this->hasMany(ProgramApplication::class, 'program_id')->latest();
     }
 
-    /**
-     * Helper: normalize value to JSON array string for DB storage.
-     */
     private function normalizeJsonArray($value): string
     {
         if ($value === null || $value === '') {

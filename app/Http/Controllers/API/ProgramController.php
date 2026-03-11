@@ -8,12 +8,10 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 
 class ProgramController extends Controller
 {
-    /**
-     * Display a listing of the resource.
-     */
     public function index()
     {
         $programs = Program::latest()->get()->map(function ($program) {
@@ -23,18 +21,16 @@ class ProgramController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Programs retrieved successfully.',
-            'data' => $programs
+            'data' => $programs,
         ], 200);
     }
 
-    /**
-     * Store a newly created resource in storage.
-     */
     public function store(Request $request)
     {
         $validator = Validator::make($request->all(), $this->storeValidationRules());
 
         $this->validateShifts($validator, $request);
+        $this->validateCurriculumCollection($validator, $request);
 
         if ($validator->fails()) {
             Log::warning('Program store validation failed', [
@@ -45,7 +41,7 @@ class ProgramController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Validation error.',
-                'errors' => $validator->errors()
+                'errors' => $validator->errors(),
             ], 422);
         }
 
@@ -74,22 +70,21 @@ class ProgramController extends Controller
             'is_active' => array_key_exists('is_active', $data) ? (bool) $data['is_active'] : true,
             'objectives' => $data['objectives'] ?? [],
             'modules' => $data['modules'] ?? [],
+            'curriculum' => $this->prepareCurriculum($request->input('curriculum', [])),
             'skills' => $data['skills'] ?? [],
             'outcomes' => $data['outcomes'] ?? [],
             'tools' => $data['tools'] ?? [],
+            'experience_levels' => $data['experience_levels'] ?? [],
             'shifts' => $this->prepareShifts($request->input('shifts', [])),
         ]);
 
         return response()->json([
             'success' => true,
             'message' => 'Program created successfully.',
-            'data' => $this->formatProgram($program)
+            'data' => $this->formatProgram($program),
         ], 201);
     }
 
-    /**
-     * Display the specified resource.
-     */
     public function show(string $id)
     {
         $program = Program::find($id);
@@ -97,20 +92,17 @@ class ProgramController extends Controller
         if (!$program) {
             return response()->json([
                 'success' => false,
-                'message' => 'Program not found.'
+                'message' => 'Program not found.',
             ], 404);
         }
 
         return response()->json([
             'success' => true,
             'message' => 'Program retrieved successfully.',
-            'data' => $this->formatProgram($program)
+            'data' => $this->formatProgram($program),
         ], 200);
     }
 
-    /**
-     * Update the specified resource in storage.
-     */
     public function update(Request $request, string $id)
     {
         $program = Program::find($id);
@@ -118,13 +110,14 @@ class ProgramController extends Controller
         if (!$program) {
             return response()->json([
                 'success' => false,
-                'message' => 'Program not found.'
+                'message' => 'Program not found.',
             ], 404);
         }
 
         $validator = Validator::make($request->all(), $this->updateValidationRules());
 
         $this->validateShifts($validator, $request);
+        $this->validateCurriculumCollection($validator, $request);
 
         if ($validator->fails()) {
             Log::warning('Program update validation failed', [
@@ -136,7 +129,7 @@ class ProgramController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Validation error.',
-                'errors' => $validator->errors()
+                'errors' => $validator->errors(),
             ], 422);
         }
 
@@ -164,9 +157,15 @@ class ProgramController extends Controller
             'is_active' => array_key_exists('is_active', $data) ? (bool) $data['is_active'] : $program->is_active,
             'objectives' => array_key_exists('objectives', $data) ? $data['objectives'] : $program->objectives,
             'modules' => array_key_exists('modules', $data) ? $data['modules'] : $program->modules,
+            'curriculum' => array_key_exists('curriculum', $request->all())
+                ? $this->prepareCurriculum($request->input('curriculum', []))
+                : $program->curriculum,
             'skills' => array_key_exists('skills', $data) ? $data['skills'] : $program->skills,
             'outcomes' => array_key_exists('outcomes', $data) ? $data['outcomes'] : $program->outcomes,
             'tools' => array_key_exists('tools', $data) ? $data['tools'] : $program->tools,
+            'experience_levels' => array_key_exists('experience_levels', $data)
+                ? $data['experience_levels']
+                : $program->experience_levels,
             'shifts' => array_key_exists('shifts', $request->all())
                 ? $this->prepareShifts($request->input('shifts', []))
                 : $program->shifts,
@@ -175,13 +174,10 @@ class ProgramController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Program updated successfully.',
-            'data' => $this->formatProgram($program->fresh())
+            'data' => $this->formatProgram($program->fresh()),
         ], 200);
     }
 
-    /**
-     * Remove the specified resource from storage.
-     */
     public function destroy(string $id)
     {
         $program = Program::find($id);
@@ -189,7 +185,7 @@ class ProgramController extends Controller
         if (!$program) {
             return response()->json([
                 'success' => false,
-                'message' => 'Program not found.'
+                'message' => 'Program not found.',
             ], 404);
         }
 
@@ -197,13 +193,234 @@ class ProgramController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => 'Program deleted successfully.'
+            'message' => 'Program deleted successfully.',
         ], 200);
     }
 
-    /**
-     * Validation rules for store.
-     */
+    public function curriculumIndex(string $programId)
+    {
+        $program = Program::find($programId);
+
+        if (!$program) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Program not found.',
+            ], 404);
+        }
+
+        $curriculum = $this->prepareCurriculum($program->curriculum ?? []);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Curriculum retrieved successfully.',
+            'data' => [
+                'curriculum' => $curriculum,
+                'summary' => $this->makeCurriculumSummary($curriculum),
+            ],
+        ], 200);
+    }
+
+    public function curriculumStore(Request $request, string $programId)
+    {
+        $program = Program::find($programId);
+
+        if (!$program) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Program not found.',
+            ], 404);
+        }
+
+        $validator = Validator::make($request->all(), [
+            'title' => 'required|string|max:255',
+            'days' => 'required|integer|min:1',
+            'description' => 'nullable|string',
+            'status' => ['nullable', Rule::in($this->curriculumStatuses())],
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation error.',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        $data = $validator->validated();
+
+        $current = $this->prepareCurriculum($program->curriculum ?? []);
+        $normalizedTitle = mb_strtolower(trim($data['title']));
+
+        foreach ($current as $item) {
+            if (mb_strtolower(trim((string) ($item['title'] ?? ''))) === $normalizedTitle) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Module title must be unique in the same program.',
+                ], 422);
+            }
+        }
+
+        $newItem = [
+            'id' => (string) Str::uuid(),
+            'title' => trim($data['title']),
+            'days' => (int) $data['days'],
+            'description' => !empty($data['description']) ? trim($data['description']) : null,
+            'status' => $data['status'] ?? 'Not Started',
+        ];
+
+        $current[] = $newItem;
+        $prepared = $this->prepareCurriculum($current);
+
+        $program->curriculum = $prepared;
+        $program->save();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Curriculum module added successfully.',
+            'data' => [
+                'item' => $newItem,
+                'curriculum' => $prepared,
+                'summary' => $this->makeCurriculumSummary($prepared),
+            ],
+        ], 201);
+    }
+
+    public function curriculumUpdate(Request $request, string $programId, string $curriculumId)
+    {
+        $program = Program::find($programId);
+
+        if (!$program) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Program not found.',
+            ], 404);
+        }
+
+        $validator = Validator::make($request->all(), [
+            'title' => 'sometimes|required|string|max:255',
+            'days' => 'sometimes|required|integer|min:1',
+            'description' => 'nullable|string',
+            'status' => ['sometimes', 'required', Rule::in($this->curriculumStatuses())],
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation error.',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        $data = $validator->validated();
+        $curriculum = $this->prepareCurriculum($program->curriculum ?? []);
+        $found = false;
+
+        foreach ($curriculum as $index => $item) {
+            if ((string) ($item['id'] ?? '') !== (string) $curriculumId) {
+                continue;
+            }
+
+            $nextTitle = array_key_exists('title', $data)
+                ? trim((string) $data['title'])
+                : trim((string) ($item['title'] ?? ''));
+
+            foreach ($curriculum as $otherIndex => $otherItem) {
+                if ($otherIndex === $index) {
+                    continue;
+                }
+
+                if (
+                    mb_strtolower(trim((string) ($otherItem['title'] ?? ''))) ===
+                    mb_strtolower($nextTitle)
+                ) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Module title must be unique in the same program.',
+                    ], 422);
+                }
+            }
+
+            $curriculum[$index] = [
+                'id' => (string) ($item['id'] ?? $curriculumId),
+                'title' => $nextTitle,
+                'days' => array_key_exists('days', $data)
+                    ? (int) $data['days']
+                    : (int) ($item['days'] ?? 0),
+                'description' => array_key_exists('description', $data)
+                    ? (!empty($data['description']) ? trim((string) $data['description']) : null)
+                    : ($item['description'] ?? null),
+                'status' => array_key_exists('status', $data)
+                    ? $data['status']
+                    : ($item['status'] ?? 'Not Started'),
+            ];
+
+            $found = true;
+            break;
+        }
+
+        if (!$found) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Curriculum item not found.',
+            ], 404);
+        }
+
+        $prepared = $this->prepareCurriculum($curriculum);
+
+        $program->curriculum = $prepared;
+        $program->save();
+
+        $updatedItem = collect($prepared)->firstWhere('id', $curriculumId);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Curriculum module updated successfully.',
+            'data' => [
+                'item' => $updatedItem,
+                'curriculum' => $prepared,
+                'summary' => $this->makeCurriculumSummary($prepared),
+            ],
+        ], 200);
+    }
+
+    public function curriculumDestroy(string $programId, string $curriculumId)
+    {
+        $program = Program::find($programId);
+
+        if (!$program) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Program not found.',
+            ], 404);
+        }
+
+        $curriculum = $this->prepareCurriculum($program->curriculum ?? []);
+        $beforeCount = count($curriculum);
+
+        $curriculum = array_values(array_filter($curriculum, function ($item) use ($curriculumId) {
+            return (string) ($item['id'] ?? '') !== (string) $curriculumId;
+        }));
+
+        if ($beforeCount === count($curriculum)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Curriculum item not found.',
+            ], 404);
+        }
+
+        $program->curriculum = $curriculum;
+        $program->save();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Curriculum module deleted successfully.',
+            'data' => [
+                'curriculum' => $curriculum,
+                'summary' => $this->makeCurriculumSummary($curriculum),
+            ],
+        ], 200);
+    }
+
     private function storeValidationRules(): array
     {
         return [
@@ -228,9 +445,17 @@ class ProgramController extends Controller
             'is_active' => 'nullable|boolean',
             'objectives' => 'nullable|array',
             'modules' => 'nullable|array',
+            'curriculum' => 'nullable|array',
+            'curriculum.*' => 'array',
+            'curriculum.*.id' => 'nullable|string|max:255',
+            'curriculum.*.title' => 'nullable|string|max:255',
+            'curriculum.*.days' => 'nullable|integer|min:1',
+            'curriculum.*.description' => 'nullable|string',
+            'curriculum.*.status' => ['nullable', Rule::in($this->curriculumStatuses())],
             'skills' => 'nullable|array',
             'outcomes' => 'nullable|array',
             'tools' => 'nullable|array',
+            'experience_levels' => 'nullable|array',
 
             'shifts' => 'nullable|array',
             'shifts.*' => 'array',
@@ -245,9 +470,6 @@ class ProgramController extends Controller
         ];
     }
 
-    /**
-     * Validation rules for update.
-     */
     private function updateValidationRules(): array
     {
         return [
@@ -272,9 +494,17 @@ class ProgramController extends Controller
             'is_active' => 'nullable|boolean',
             'objectives' => 'nullable|array',
             'modules' => 'nullable|array',
+            'curriculum' => 'sometimes|array',
+            'curriculum.*' => 'array',
+            'curriculum.*.id' => 'nullable|string|max:255',
+            'curriculum.*.title' => 'nullable|string|max:255',
+            'curriculum.*.days' => 'nullable|integer|min:1',
+            'curriculum.*.description' => 'nullable|string',
+            'curriculum.*.status' => ['nullable', Rule::in($this->curriculumStatuses())],
             'skills' => 'nullable|array',
             'outcomes' => 'nullable|array',
             'tools' => 'nullable|array',
+            'experience_levels' => 'nullable|array',
 
             'shifts' => 'sometimes|array',
             'shifts.*' => 'array',
@@ -289,12 +519,173 @@ class ProgramController extends Controller
         ];
     }
 
-    /**
-     * Normalize incoming shifts.
-     * Accept both snake_case and camelCase from frontend.
-     */
+    private function curriculumStatuses(): array
+    {
+        return [
+            'Not Started',
+            'In Progress',
+            'Completed',
+            'On Hold',
+        ];
+    }
+
+    private function normalizeIncomingCurriculum($curriculum): array
+    {
+        if (is_string($curriculum)) {
+            $decoded = json_decode($curriculum, true);
+
+            if (json_last_error() === JSON_ERROR_NONE) {
+                $curriculum = $decoded;
+            }
+        }
+
+        if (!is_array($curriculum)) {
+            return [];
+        }
+
+        $normalized = [];
+
+        foreach ($curriculum as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            $status = trim((string) ($item['status'] ?? 'Not Started'));
+
+            if (!in_array($status, $this->curriculumStatuses(), true)) {
+                $status = 'Not Started';
+            }
+
+            $normalized[] = [
+                'id' => $item['id'] ?? null,
+                'title' => trim((string) ($item['title'] ?? $item['name'] ?? '')),
+                'days' => (int) ($item['days'] ?? $item['day_count'] ?? 0),
+                'description' => trim((string) ($item['description'] ?? '')),
+                'status' => $status,
+            ];
+        }
+
+        return $normalized;
+    }
+
+    private function validateCurriculumCollection($validator, Request $request): void
+    {
+        $validator->after(function ($validator) use ($request) {
+            if (!array_key_exists('curriculum', $request->all())) {
+                return;
+            }
+
+            $curriculum = $this->normalizeIncomingCurriculum($request->input('curriculum', []));
+            $usedTitles = [];
+
+            foreach ($curriculum as $index => $item) {
+                $title = $item['title'];
+                $days = (int) $item['days'];
+                $description = $item['description'];
+                $status = $item['status'];
+
+                $hasAnyValue =
+                    $title !== '' ||
+                    $days > 0 ||
+                    $description !== '' ||
+                    $status !== '';
+
+                if (!$hasAnyValue) {
+                    continue;
+                }
+
+                if ($title === '') {
+                    $validator->errors()->add("curriculum.$index.title", 'Module title is required.');
+                }
+
+                if ($days < 1) {
+                    $validator->errors()->add("curriculum.$index.days", 'Days must be at least 1.');
+                }
+
+                if (!in_array($status, $this->curriculumStatuses(), true)) {
+                    $validator->errors()->add("curriculum.$index.status", 'Invalid curriculum status.');
+                }
+
+                if ($title !== '') {
+                    $lowerTitle = mb_strtolower($title);
+
+                    if (in_array($lowerTitle, $usedTitles, true)) {
+                        $validator->errors()->add("curriculum.$index.title", 'Module title must be unique in the same program.');
+                    }
+
+                    $usedTitles[] = $lowerTitle;
+                }
+            }
+        });
+    }
+
+    private function prepareCurriculum($curriculum): array
+    {
+        $normalizedCurriculum = $this->normalizeIncomingCurriculum($curriculum);
+        $prepared = [];
+
+        foreach ($normalizedCurriculum as $item) {
+            $title = trim((string) ($item['title'] ?? ''));
+            $days = max((int) ($item['days'] ?? 0), 0);
+            $description = trim((string) ($item['description'] ?? ''));
+            $status = trim((string) ($item['status'] ?? 'Not Started'));
+
+            if (!in_array($status, $this->curriculumStatuses(), true)) {
+                $status = 'Not Started';
+            }
+
+            if ($title === '' && $days === 0 && $description === '') {
+                continue;
+            }
+
+            $prepared[] = [
+                'id' => !empty($item['id']) ? (string) $item['id'] : (string) Str::uuid(),
+                'title' => $title,
+                'days' => $days,
+                'description' => $description !== '' ? $description : null,
+                'status' => $status,
+            ];
+        }
+
+        return array_values($prepared);
+    }
+
+    private function makeCurriculumSummary(array $curriculum): array
+    {
+        $totalDays = 0;
+        $statusBreakdown = [
+            'Not Started' => 0,
+            'In Progress' => 0,
+            'Completed' => 0,
+            'On Hold' => 0,
+        ];
+
+        foreach ($curriculum as $item) {
+            $totalDays += (int) ($item['days'] ?? 0);
+
+            $status = $item['status'] ?? 'Not Started';
+            if (array_key_exists($status, $statusBreakdown)) {
+                $statusBreakdown[$status]++;
+            }
+        }
+
+        return [
+            'total_modules' => count($curriculum),
+            'total_days' => $totalDays,
+            'status_breakdown' => $statusBreakdown,
+        ];
+    }
+
     private function normalizeIncomingShifts($shifts): array
     {
+        if (is_string($shifts)) {
+            $decoded = json_decode($shifts, true);
+
+            if (json_last_error() === JSON_ERROR_NONE) {
+                $shifts = $decoded;
+            }
+        }
+
         if (!is_array($shifts)) {
             return [];
         }
@@ -324,9 +715,6 @@ class ProgramController extends Controller
         return $normalized;
     }
 
-    /**
-     * Extra validation for shifts.
-     */
     private function validateShifts($validator, Request $request): void
     {
         $validator->after(function ($validator) use ($request) {
@@ -335,7 +723,6 @@ class ProgramController extends Controller
             }
 
             $shifts = $this->normalizeIncomingShifts($request->input('shifts', []));
-
             $usedNames = [];
 
             foreach ($shifts as $index => $shift) {
@@ -407,13 +794,9 @@ class ProgramController extends Controller
         });
     }
 
-    /**
-     * Prepare shifts before saving.
-     */
     private function prepareShifts($shifts): array
     {
         $normalizedShifts = $this->normalizeIncomingShifts($shifts);
-
         $prepared = [];
 
         foreach ($normalizedShifts as $shift) {
@@ -446,14 +829,13 @@ class ProgramController extends Controller
         return array_values($prepared);
     }
 
-    /**
-     * Format one program with shift summary.
-     */
     private function formatProgram(Program $program): array
     {
         $data = $program->toArray();
 
         $shifts = $this->prepareShifts($data['shifts'] ?? []);
+        $curriculum = $this->prepareCurriculum($data['curriculum'] ?? []);
+
         $totalCapacity = 0;
         $totalFilled = 0;
         $fullShiftCount = 0;
@@ -468,8 +850,9 @@ class ProgramController extends Controller
         }
 
         $data['price'] = isset($data['price']) ? (float) $data['price'] : 0;
-
         $data['shifts'] = $shifts;
+        $data['curriculum'] = $curriculum;
+
         $data['shift_summary'] = [
             'total_shifts' => count($shifts),
             'total_capacity' => $totalCapacity,
@@ -482,13 +865,11 @@ class ProgramController extends Controller
                 : 'All shifts still have space.',
         ];
 
+        $data['curriculum_summary'] = $this->makeCurriculumSummary($curriculum);
+
         return $data;
     }
 
-    /**
-     * Generate program code automatically.
-     * Example: Software Development => SD-2026-001
-     */
     private function generateProgramCode(string $programName): string
     {
         $prefix = $this->makeProgramPrefix($programName);
@@ -515,9 +896,6 @@ class ProgramController extends Controller
         return $code;
     }
 
-    /**
-     * Create abbreviation from program name.
-     */
     private function makeProgramPrefix(string $programName): string
     {
         $cleanName = strtoupper(trim(preg_replace('/[^A-Za-z0-9\s]/', ' ', $programName)));
