@@ -4,6 +4,7 @@ namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
 use App\Models\Program;
+use App\Models\ProgramApplication;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
@@ -135,6 +136,10 @@ class ProgramController extends Controller
 
         $data = $validator->validated();
 
+        $incomingShifts = array_key_exists('shifts', $request->all())
+            ? $this->prepareShifts($request->input('shifts', []))
+            : $program->shifts;
+
         $program->update([
             'slug' => array_key_exists('slug', $data) ? $data['slug'] : $program->slug,
             'name' => $data['name'] ?? $program->name,
@@ -166,9 +171,7 @@ class ProgramController extends Controller
             'experience_levels' => array_key_exists('experience_levels', $data)
                 ? $data['experience_levels']
                 : $program->experience_levels,
-            'shifts' => array_key_exists('shifts', $request->all())
-                ? $this->prepareShifts($request->input('shifts', []))
-                : $program->shifts,
+            'shifts' => $incomingShifts,
         ]);
 
         return response()->json([
@@ -529,6 +532,11 @@ class ProgramController extends Controller
         ];
     }
 
+    private function activeApplicationStatuses(): array
+    {
+        return ['Pending', 'Reviewed', 'Accepted'];
+    }
+
     private function normalizeIncomingCurriculum($curriculum): array
     {
         if (is_string($curriculum)) {
@@ -829,11 +837,54 @@ class ProgramController extends Controller
         return array_values($prepared);
     }
 
+    private function getProgramShiftUsageCounts(int $programId): array
+    {
+        return ProgramApplication::query()
+            ->where('program_id', $programId)
+            ->whereNotNull('shift_id')
+            ->whereIn('status', $this->activeApplicationStatuses())
+            ->get(['shift_id'])
+            ->groupBy(function ($application) {
+                return (string) $application->shift_id;
+            })
+            ->map(function ($items) {
+                return $items->count();
+            })
+            ->toArray();
+    }
+
+    private function syncPreparedShiftsWithApplications(int $programId, $shifts): array
+    {
+        $prepared = $this->prepareShifts($shifts);
+        $usageCounts = $programId > 0 ? $this->getProgramShiftUsageCounts($programId) : [];
+
+        $updated = [];
+
+        foreach ($prepared as $shift) {
+            $id = (string) ($shift['id'] ?? '');
+            $capacity = max((int) ($shift['capacity'] ?? $shift['volume'] ?? 0), 0);
+            $filled = $id !== '' ? (int) ($usageCounts[$id] ?? 0) : 0;
+            $availableSlots = max($capacity - $filled, 0);
+            $isFull = $capacity > 0 && $filled >= $capacity;
+
+            $shift['capacity'] = $capacity;
+            $shift['volume'] = $capacity;
+            $shift['filled'] = $filled;
+            $shift['available_slots'] = $availableSlots;
+            $shift['is_full'] = $isFull;
+            $shift['message'] = $isFull ? 'Shift is full.' : 'Shift available.';
+
+            $updated[] = $shift;
+        }
+
+        return array_values($updated);
+    }
+
     private function formatProgram(Program $program): array
     {
         $data = $program->toArray();
 
-        $shifts = $this->prepareShifts($data['shifts'] ?? []);
+        $shifts = $this->syncPreparedShiftsWithApplications((int) $program->id, $data['shifts'] ?? []);
         $curriculum = $this->prepareCurriculum($data['curriculum'] ?? []);
 
         $totalCapacity = 0;

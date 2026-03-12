@@ -7,6 +7,7 @@ use App\Models\Role;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Validator;
@@ -47,17 +48,20 @@ class RegisterController extends BaseController
         ]);
 
         if (Schema::hasTable('roles') && Schema::hasTable('role_user')) {
-            $defaultRole = Role::where('slug', 'haguruka_staff')->first();
+            // Change this default role if your business rule is different
+            $defaultRole = Role::where('slug', 'student')->first();
 
             if ($defaultRole) {
-                $user->roles()->syncWithoutDetaching([$defaultRole->id]);
+                $user->roles()->sync([$defaultRole->id]);
             }
         }
 
         $user->load('roles:id,name,slug');
 
+        $primaryRole = $this->resolvePrimaryRole($user->roles);
+
         $success = [
-            'token' => $user->createToken('Haguruka')->plainTextToken,
+            'token' => $user->createToken('AsyncAfrica')->plainTextToken,
             'user'  => [
                 'id'        => $user->id,
                 'name'      => $user->name,
@@ -65,7 +69,14 @@ class RegisterController extends BaseController
                 'phone'     => $user->phone,
                 'status'    => $user->status,
                 'is_active' => $user->is_active,
-                'roles'     => $user->roles,
+                'role'      => $primaryRole,
+                'roles'     => $user->roles->map(function ($role) {
+                    return [
+                        'id'   => $role->id,
+                        'name' => $role->name,
+                        'slug' => $role->slug,
+                    ];
+                })->values(),
             ],
         ];
 
@@ -102,17 +113,25 @@ class RegisterController extends BaseController
         ];
 
         if (!Auth::attempt($credentials)) {
-            return $this->sendError('Unauthorised.', ['error' => 'Invalid credentials']);
+            return $this->sendError('Unauthorised.', [
+                'error' => 'Invalid credentials',
+            ]);
         }
 
         /** @var \App\Models\User $user */
         $user = User::with('roles:id,name,slug')->find(Auth::id());
 
+        if (!$user) {
+            return $this->sendError('Unauthorised.', [
+                'error' => 'User not found after authentication.',
+            ]);
+        }
+
         if (!$user->is_active || $user->status !== 'active') {
             Auth::logout();
 
             return $this->sendError('Account access denied.', [
-                'error' => 'Your account is inactive or suspended.'
+                'error' => 'Your account is inactive or suspended.',
             ]);
         }
 
@@ -120,8 +139,20 @@ class RegisterController extends BaseController
             'last_login_at' => now(),
         ]);
 
+        $user->refresh()->load('roles:id,name,slug');
+
+        $primaryRole = $this->resolvePrimaryRole($user->roles);
+
+        if (!$primaryRole) {
+            Auth::logout();
+
+            return $this->sendError('Account role error.', [
+                'error' => 'No valid role is assigned to this user.',
+            ]);
+        }
+
         $success = [
-            'token' => $user->createToken('Haguruka')->plainTextToken,
+            'token' => $user->createToken('AsyncAfrica')->plainTextToken,
             'user'  => [
                 'id'            => $user->id,
                 'name'          => $user->name,
@@ -130,10 +161,55 @@ class RegisterController extends BaseController
                 'status'        => $user->status,
                 'is_active'     => $user->is_active,
                 'last_login_at' => $user->last_login_at,
-                'roles'         => $user->roles,
+                'role'          => $primaryRole,
+                'roles'         => $user->roles->map(function ($role) {
+                    return [
+                        'id'   => $role->id,
+                        'name' => $role->name,
+                        'slug' => $role->slug,
+                    ];
+                })->values(),
             ],
         ];
 
         return $this->sendResponse($success, 'User login successfully.');
+    }
+
+    /**
+     * Resolve one primary role for frontend redirect
+     */
+    private function resolvePrimaryRole(Collection $roles): ?array
+    {
+        if ($roles->isEmpty()) {
+            return null;
+        }
+
+        // Priority for redirect:
+        // CEO first, then admin, then trainer, then student
+        $preferredOrder = ['ceo', 'admin', 'trainer', 'student'];
+
+        foreach ($preferredOrder as $slug) {
+            $role = $roles->firstWhere('slug', $slug);
+
+            if ($role) {
+                return [
+                    'id'   => $role->id,
+                    'name' => $role->name,
+                    'slug' => $role->slug,
+                ];
+            }
+        }
+
+        $firstRole = $roles->first();
+
+        if (!$firstRole) {
+            return null;
+        }
+
+        return [
+            'id'   => $firstRole->id,
+            'name' => $firstRole->name,
+            'slug' => $firstRole->slug,
+        ];
     }
 }

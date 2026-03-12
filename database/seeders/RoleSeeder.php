@@ -20,12 +20,22 @@ class RoleSeeder extends Seeder
                 'is_active' => true,
             ],
             [
+                'name' => 'Ceo',
+                'slug' => 'ceo',
+                'description' => 'Chief Executive Officer',
+                'is_active' => true,
+            ],
+            [
                 'name' => 'Student',
                 'slug' => 'student',
-                'description' => 'Student Account ',
+                'description' => 'Student Account',
                 'is_active' => true,
-
-
+            ],
+            [
+                'name' => 'Trainer',
+                'slug' => 'trainer',
+                'description' => 'Trainer Account',
+                'is_active' => true,
             ],
         ];
 

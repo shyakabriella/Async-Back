@@ -31,10 +31,26 @@ class UserSeeder extends Seeder
                 'password' => 'password123',
                 'status' => 'active',
                 'is_active' => true,
-                'role_slug' => 'admin',
+                'role_slug' => 'ceo',
             ],
-            
-          
+            [
+                'name' => 'System Trainer',
+                'email' => 'trainer@asyncafrica.com',
+                'phone' => '0780000001',
+                'password' => 'password123',
+                'status' => 'active',
+                'is_active' => true,
+                'role_slug' => 'trainer',
+            ],
+            [
+                'name' => 'Student User',
+                'email' => 'student@asyncafrica.com',
+                'phone' => '0780000002',
+                'password' => 'password123',
+                'status' => 'active',
+                'is_active' => true,
+                'role_slug' => 'student',
+            ],
         ];
 
         foreach ($users as $item) {
@@ -50,7 +66,8 @@ class UserSeeder extends Seeder
                 $role = Role::where('slug', $roleSlug)->first();
 
                 if ($role) {
-                    $user->roles()->syncWithoutDetaching([$role->id]);
+                    // Replace old roles with the correct one
+                    $user->roles()->sync([$role->id]);
                 }
             }
         }

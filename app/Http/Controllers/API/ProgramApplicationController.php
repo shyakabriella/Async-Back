@@ -8,9 +8,11 @@ use App\Models\ProgramApplication;
 use App\Notifications\ApplicationApprovedNotification;
 use App\Notifications\ApplicationReceivedNotification;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\ValidationException;
 
 class ProgramApplicationController extends Controller
 {
@@ -209,50 +211,88 @@ class ProgramApplicationController extends Controller
             ], 422);
         }
 
-        $program = Program::findOrFail($request->program_id);
-        $shifts = $this->normalizeShifts($program->shifts ?? []);
-        $selectedShift = collect($shifts)->firstWhere('id', $request->shift_id);
+        try {
+            $application = DB::transaction(function () use ($request) {
+                $program = Program::where('id', $request->program_id)
+                    ->lockForUpdate()
+                    ->firstOrFail();
 
-        $application = ProgramApplication::create([
-            'program_id' => $program->id,
-            'program_title' => $program->name ?? null,
-            'program_slug' => $program->slug ?? null,
+                // Make sure shift availability is current before booking
+                $this->syncProgramShiftAvailability($program);
 
-            'shift_id' => $request->shift_id,
-            'shift_name' => $selectedShift['name'] ?? null,
-            'experience_level' => $request->experience_level,
-            'selected_skills' => $this->normalizeStringArray($request->input('selected_skills', [])),
-            'selected_tools' => $this->normalizeStringArray($request->input('selected_tools', [])),
+                $program->refresh();
+                $shifts = $this->normalizeShifts($program->shifts ?? []);
+                $shiftId = (string) $request->input('shift_id');
+                $selectedShift = null;
 
-            'auth_provider' => trim((string) $request->input('auth_provider', 'manual')),
+                if ($shiftId !== '') {
+                    $selectedShift = collect($shifts)->first(function ($shift) use ($shiftId) {
+                        return (string) ($shift['id'] ?? '') === $shiftId;
+                    });
 
-            'first_name' => $this->cleanValue($request->input('applicant.first_name')),
-            'last_name' => $this->cleanValue($request->input('applicant.last_name')),
-            'email' => $this->normalizeEmail($request->input('applicant.email')),
-            'phone' => $this->cleanPhoneForStorage($request->input('applicant.phone')),
-            'country' => $this->cleanValue($request->input('applicant.country')),
-            'city' => $this->cleanValue($request->input('applicant.city')),
-            'date_of_birth' => $request->input('applicant.date_of_birth'),
-            'gender' => $this->cleanValue($request->input('applicant.gender')),
+                    if (!$selectedShift) {
+                        throw ValidationException::withMessages([
+                            'shift_id' => ['Selected shift does not belong to this program.'],
+                        ]);
+                    }
 
-            'education_level' => $this->cleanValue($request->input('background.education_level')),
-            'school_name' => $this->cleanValue($request->input('background.school_name')),
-            'field_of_study' => $this->cleanValue($request->input('background.field_of_study')),
+                    if (!empty($selectedShift['is_full'])) {
+                        throw ValidationException::withMessages([
+                            'shift_id' => ['Selected shift is already full.'],
+                        ]);
+                    }
+                }
 
-            'agree_terms' => $request->boolean('consents.agree_terms'),
-            'agree_communication' => $request->has('consents.agree_communication')
-                ? $request->boolean('consents.agree_communication')
-                : true,
+                $application = ProgramApplication::create([
+                    'program_id' => $program->id,
+                    'program_title' => $program->name ?? null,
+                    'program_slug' => $program->slug ?? null,
 
-            'status' => 'Pending',
-            'submitted_at' => $request->input('submitted_at', now()),
-            'meta' => [
-                'ip_address' => $request->ip(),
-                'user_agent' => $request->userAgent(),
-            ],
-        ]);
+                    'shift_id' => $request->shift_id,
+                    'shift_name' => $selectedShift['name'] ?? null,
+                    'experience_level' => $request->experience_level,
+                    'selected_skills' => $this->normalizeStringArray($request->input('selected_skills', [])),
+                    'selected_tools' => $this->normalizeStringArray($request->input('selected_tools', [])),
 
-        $application = $application->fresh('program');
+                    'auth_provider' => trim((string) $request->input('auth_provider', 'manual')),
+
+                    'first_name' => $this->cleanValue($request->input('applicant.first_name')),
+                    'last_name' => $this->cleanValue($request->input('applicant.last_name')),
+                    'email' => $this->normalizeEmail($request->input('applicant.email')),
+                    'phone' => $this->cleanPhoneForStorage($request->input('applicant.phone')),
+                    'country' => $this->cleanValue($request->input('applicant.country')),
+                    'city' => $this->cleanValue($request->input('applicant.city')),
+                    'date_of_birth' => $request->input('applicant.date_of_birth'),
+                    'gender' => $this->cleanValue($request->input('applicant.gender')),
+
+                    'education_level' => $this->cleanValue($request->input('background.education_level')),
+                    'school_name' => $this->cleanValue($request->input('background.school_name')),
+                    'field_of_study' => $this->cleanValue($request->input('background.field_of_study')),
+
+                    'agree_terms' => $request->boolean('consents.agree_terms'),
+                    'agree_communication' => $request->has('consents.agree_communication')
+                        ? $request->boolean('consents.agree_communication')
+                        : true,
+
+                    'status' => 'Pending',
+                    'submitted_at' => $request->input('submitted_at', now()),
+                    'meta' => [
+                        'ip_address' => $request->ip(),
+                        'user_agent' => $request->userAgent(),
+                    ],
+                ]);
+
+                $this->syncProgramShiftAvailability($program);
+
+                return $application->fresh('program');
+            });
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation error.',
+                'errors' => $e->errors(),
+            ], 422);
+        }
 
         $this->sendNotificationSafely(
             $application->email,
@@ -316,10 +356,22 @@ class ProgramApplicationController extends Controller
 
         $oldStatus = $application->status;
 
-        $application->update([
-            'status' => $request->input('status', $application->status),
-            'admin_note' => $request->input('admin_note', $application->admin_note),
-        ]);
+        DB::transaction(function () use ($request, $application) {
+            $application->update([
+                'status' => $request->input('status', $application->status),
+                'admin_note' => $request->input('admin_note', $application->admin_note),
+            ]);
+
+            if ($application->program_id) {
+                $program = Program::where('id', $application->program_id)
+                    ->lockForUpdate()
+                    ->first();
+
+                if ($program) {
+                    $this->syncProgramShiftAvailability($program);
+                }
+            }
+        });
 
         $application = $application->fresh('program');
 
@@ -351,7 +403,21 @@ class ProgramApplicationController extends Controller
             ], 404);
         }
 
-        $application->delete();
+        DB::transaction(function () use ($application) {
+            $program = null;
+
+            if ($application->program_id) {
+                $program = Program::where('id', $application->program_id)
+                    ->lockForUpdate()
+                    ->first();
+            }
+
+            $application->delete();
+
+            if ($program) {
+                $this->syncProgramShiftAvailability($program);
+            }
+        });
 
         return response()->json([
             'success' => true,
@@ -373,6 +439,63 @@ class ProgramApplicationController extends Controller
                 'error' => $e->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * Recalculate shifts from current applications.
+     */
+    private function syncProgramShiftAvailability(Program $program): void
+    {
+        $shifts = $this->normalizeShifts($program->shifts ?? []);
+        $usageCounts = $this->getShiftUsageCounts((int) $program->id);
+        $program->shifts = $this->applyShiftUsageCounts($shifts, $usageCounts);
+        $program->save();
+    }
+
+    /**
+     * Count active applications per shift.
+     */
+    private function getShiftUsageCounts(int $programId): array
+    {
+        return ProgramApplication::query()
+            ->where('program_id', $programId)
+            ->whereNotNull('shift_id')
+            ->whereIn('status', ['Pending', 'Reviewed', 'Accepted'])
+            ->get(['shift_id'])
+            ->groupBy(function ($application) {
+                return (string) $application->shift_id;
+            })
+            ->map(function ($items) {
+                return $items->count();
+            })
+            ->toArray();
+    }
+
+    /**
+     * Apply counts to shifts.
+     */
+    private function applyShiftUsageCounts(array $shifts, array $usageCounts): array
+    {
+        $updated = [];
+
+        foreach ($shifts as $shift) {
+            $id = (string) ($shift['id'] ?? '');
+            $capacity = max((int) ($shift['capacity'] ?? $shift['volume'] ?? 0), 0);
+            $filled = $id !== '' ? (int) ($usageCounts[$id] ?? 0) : 0;
+            $availableSlots = max($capacity - $filled, 0);
+            $isFull = $capacity > 0 && $filled >= $capacity;
+
+            $shift['capacity'] = $capacity;
+            $shift['volume'] = $capacity;
+            $shift['filled'] = $filled;
+            $shift['available_slots'] = $availableSlots;
+            $shift['is_full'] = $isFull;
+            $shift['message'] = $isFull ? 'Shift is full.' : 'Shift available.';
+
+            $updated[] = $shift;
+        }
+
+        return array_values($updated);
     }
 
     /**
@@ -493,7 +616,7 @@ class ProgramApplicationController extends Controller
                 continue;
             }
 
-            $capacity = (int) ($shift['capacity'] ?? 0);
+            $capacity = (int) ($shift['capacity'] ?? $shift['volume'] ?? 0);
             $filled = (int) (
                 $shift['filled']
                 ?? $shift['enrolled']
@@ -507,9 +630,11 @@ class ProgramApplicationController extends Controller
                 'start_time' => $shift['start_time'] ?? $shift['startTime'] ?? null,
                 'end_time' => $shift['end_time'] ?? $shift['endTime'] ?? null,
                 'capacity' => $capacity,
+                'volume' => $capacity,
                 'filled' => $filled,
                 'available_slots' => $shift['available_slots'] ?? max($capacity - $filled, 0),
                 'is_full' => $shift['is_full'] ?? $shift['isFull'] ?? ($capacity > 0 && $filled >= $capacity),
+                'message' => $shift['message'] ?? null,
             ];
         }
 
