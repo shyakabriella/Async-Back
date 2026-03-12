@@ -7,6 +7,7 @@ use App\Models\Program;
 use App\Models\ProgramApplication;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
@@ -15,9 +16,12 @@ class ProgramController extends Controller
 {
     public function index()
     {
-        $programs = Program::latest()->get()->map(function ($program) {
-            return $this->formatProgram($program);
-        });
+        $programs = Program::with('users:id,name,email,phone')
+            ->latest()
+            ->get()
+            ->map(function ($program) {
+                return $this->formatProgram($program);
+            });
 
         return response()->json([
             'success' => true,
@@ -79,6 +83,15 @@ class ProgramController extends Controller
             'shifts' => $this->prepareShifts($request->input('shifts', [])),
         ]);
 
+        if (
+            Schema::hasTable('program_user') &&
+            array_key_exists('user_ids', $request->all())
+        ) {
+            $program->users()->sync($request->input('user_ids', []));
+        }
+
+        $program->load('users:id,name,email,phone');
+
         return response()->json([
             'success' => true,
             'message' => 'Program created successfully.',
@@ -88,7 +101,7 @@ class ProgramController extends Controller
 
     public function show(string $id)
     {
-        $program = Program::find($id);
+        $program = Program::with('users:id,name,email,phone')->find($id);
 
         if (!$program) {
             return response()->json([
@@ -106,7 +119,7 @@ class ProgramController extends Controller
 
     public function update(Request $request, string $id)
     {
-        $program = Program::find($id);
+        $program = Program::with('users:id,name,email,phone')->find($id);
 
         if (!$program) {
             return response()->json([
@@ -174,10 +187,19 @@ class ProgramController extends Controller
             'shifts' => $incomingShifts,
         ]);
 
+        if (
+            Schema::hasTable('program_user') &&
+            array_key_exists('user_ids', $request->all())
+        ) {
+            $program->users()->sync($request->input('user_ids', []));
+        }
+
+        $program->refresh()->load('users:id,name,email,phone');
+
         return response()->json([
             'success' => true,
             'message' => 'Program updated successfully.',
-            'data' => $this->formatProgram($program->fresh()),
+            'data' => $this->formatProgram($program),
         ], 200);
     }
 
@@ -470,6 +492,9 @@ class ProgramController extends Controller
             'shifts.*.filled' => 'nullable|integer|min:0',
             'shifts.*.enrolled' => 'nullable|integer|min:0',
             'shifts.*.current_students' => 'nullable|integer|min:0',
+
+            'user_ids' => 'nullable|array',
+            'user_ids.*' => 'integer|exists:users,id',
         ];
     }
 
@@ -519,6 +544,9 @@ class ProgramController extends Controller
             'shifts.*.filled' => 'nullable|integer|min:0',
             'shifts.*.enrolled' => 'nullable|integer|min:0',
             'shifts.*.current_students' => 'nullable|integer|min:0',
+
+            'user_ids' => 'nullable|array',
+            'user_ids.*' => 'integer|exists:users,id',
         ];
     }
 
@@ -917,6 +945,21 @@ class ProgramController extends Controller
         ];
 
         $data['curriculum_summary'] = $this->makeCurriculumSummary($curriculum);
+
+        $data['users'] = $program->relationLoaded('users')
+            ? $program->users->map(function ($user) {
+                return [
+                    'id'    => $user->id,
+                    'name'  => $user->name,
+                    'email' => $user->email,
+                    'phone' => $user->phone,
+                ];
+            })->values()
+            : [];
+
+        $data['users_count'] = $program->relationLoaded('users')
+            ? $program->users->count()
+            : 0;
 
         return $data;
     }

@@ -14,11 +14,6 @@ class User extends Authenticatable
 {
     use HasFactory, Notifiable, HasApiTokens;
 
-    /**
-     * The attributes that are mass assignable.
-     *
-     * @var array<int, string>
-     */
     protected $fillable = [
         'name',
         'email',
@@ -29,21 +24,11 @@ class User extends Authenticatable
         'last_login_at',
     ];
 
-    /**
-     * The attributes that should be hidden for serialization.
-     *
-     * @var array<int, string>
-     */
     protected $hidden = [
         'password',
         'remember_token',
     ];
 
-    /**
-     * Get the attributes that should be cast.
-     *
-     * @return array<string, string>
-     */
     protected function casts(): array
     {
         return [
@@ -54,33 +39,27 @@ class User extends Authenticatable
         ];
     }
 
-    /**
-     * User roles relationship
-     */
     public function roles()
     {
         return $this->belongsToMany(Role::class);
     }
 
-    /**
-     * Check if user has a specific role by slug
-     */
+    public function programs()
+    {
+        return $this->belongsToMany(Program::class, 'program_user')
+            ->withTimestamps();
+    }
+
     public function hasRole(string $slug): bool
     {
         return $this->roles()->where('slug', $slug)->exists();
     }
 
-    /**
-     * Agent presence relationship
-     */
     public function agentPresence()
     {
         return $this->hasOne(AgentPresence::class);
     }
 
-    /**
-     * Conversations assigned to this agent
-     */
     public function assignedConversations()
     {
         return $this->hasMany(ChatConversation::class, 'assigned_agent_id');

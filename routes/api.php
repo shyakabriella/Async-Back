@@ -11,6 +11,10 @@ use App\Http\Controllers\API\ProgramApplicationController;
 Route::controller(RegisterController::class)->group(function () {
     Route::post('register', 'register');
     Route::post('login', 'login');
+
+    // Password reset / account setup
+    Route::post('forgot-password', 'forgotPassword');
+    Route::post('reset-password', 'resetPassword');
 });
 
 /*
@@ -40,7 +44,11 @@ Route::apiResource('training-programs', TrainingProgramController::class)->only(
 */
 Route::get('programs/{program}/curriculum', [ProgramController::class, 'curriculumIndex']);
 
-// Student submits application
+/*
+|--------------------------------------------------------------------------
+| Student submits application
+|--------------------------------------------------------------------------
+*/
 Route::post('applications', [ProgramApplicationController::class, 'store']);
 
 /*
@@ -61,6 +69,44 @@ Route::prefix('support-chat')->group(function () {
 |--------------------------------------------------------------------------
 */
 Route::middleware('auth:sanctum')->group(function () {
+    /*
+    |--------------------------------------------------------------------------
+    | Authenticated account routes
+    |--------------------------------------------------------------------------
+    */
+    Route::controller(RegisterController::class)->group(function () {
+        Route::get('me', 'me');
+        Route::post('logout', 'logout');
+
+        /*
+        |--------------------------------------------------------------------------
+        | User management routes (inside RegisterController)
+        |--------------------------------------------------------------------------
+        */
+        Route::get('users', 'index');
+        Route::post('users', 'store');
+        Route::get('users/{id}', 'show');
+        Route::put('users/{id}', 'update');
+        Route::patch('users/{id}', 'update');
+        Route::delete('users/{id}', 'destroy');
+        Route::post('users/{id}/toggle-status', 'toggleStatus');
+
+        /*
+        |--------------------------------------------------------------------------
+        | Optional helper routes
+        |--------------------------------------------------------------------------
+        */
+        Route::get('roles', 'roles');
+        Route::get('users-program-options', 'programOptions');
+        Route::get('programs/{program}/users', 'programUsers');
+        Route::post('programs/{program}/users/sync', 'syncProgramUsers');
+    });
+
+    /*
+    |--------------------------------------------------------------------------
+    | Programs
+    |--------------------------------------------------------------------------
+    */
     Route::apiResource('programs', ProgramController::class)->except(['index', 'show']);
     Route::apiResource('training-programs', TrainingProgramController::class)->except(['index', 'show']);
 

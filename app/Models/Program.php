@@ -131,6 +131,12 @@ class Program extends Model
         return $this->hasMany(ProgramApplication::class, 'program_id')->latest();
     }
 
+    public function users()
+    {
+        return $this->belongsToMany(User::class, 'program_user')
+            ->withTimestamps();
+    }
+
     private function normalizeJsonArray($value): string
     {
         if ($value === null || $value === '') {
