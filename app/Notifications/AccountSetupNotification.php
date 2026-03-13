@@ -6,17 +6,17 @@ use Illuminate\Bus\Queueable;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
 
-class ResetPasswordLinkNotification extends Notification
+class AccountSetupNotification extends Notification
 {
     use Queueable;
 
-    protected string $token;
-    protected string $email;
+    protected string $setupUrl;
+    protected ?string $temporaryPassword;
 
-    public function __construct(string $token, string $email)
+    public function __construct(string $setupUrl, ?string $temporaryPassword = null)
     {
-        $this->token = $token;
-        $this->email = $email;
+        $this->setupUrl = $setupUrl;
+        $this->temporaryPassword = $temporaryPassword;
     }
 
     public function via(object $notifiable): array
@@ -26,20 +26,12 @@ class ResetPasswordLinkNotification extends Notification
 
     public function toMail(object $notifiable): MailMessage
     {
-        $frontendUrl = rtrim(
-            env('FRONTEND_URL', config('app.url')),
-            '/'
-        );
-
-        $resetUrl = $frontendUrl .
-            '/reset-password?token=' . urlencode($this->token) .
-            '&email=' . urlencode($this->email);
-
         return (new MailMessage)
-            ->subject('Reset Your Password')
-            ->view('emails.reset-password-link', [
+            ->subject('Set Up Your Account')
+            ->view('emails.account-setup', [
                 'user' => $notifiable,
-                'resetUrl' => $resetUrl,
+                'setupUrl' => $this->setupUrl,
+                'temporaryPassword' => $this->temporaryPassword,
                 'appName' => config('app.name', 'AsyncAfrica'),
             ]);
     }
