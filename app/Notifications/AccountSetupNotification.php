@@ -10,11 +10,13 @@ class AccountSetupNotification extends Notification
 {
     use Queueable;
 
-    protected string $setupUrl;
+    protected string $token;
+    protected string $email;
 
-    public function __construct(string $setupUrl)
+    public function __construct(string $token, string $email)
     {
-        $this->setupUrl = $setupUrl;
+        $this->token = $token;
+        $this->email = $email;
     }
 
     public function via(object $notifiable): array
@@ -24,11 +26,20 @@ class AccountSetupNotification extends Notification
 
     public function toMail(object $notifiable): MailMessage
     {
+        $frontendUrl = rtrim(
+            env('FRONTEND_URL', config('app.url')),
+            '/'
+        );
+
+        $resetUrl = $frontendUrl
+            . '/reset-password?token=' . urlencode($this->token)
+            . '&email=' . urlencode($this->email);
+
         return (new MailMessage)
             ->subject('Set Up Your Password')
             ->view('emails.reset-password-link', [
                 'user' => $notifiable,
-                'resetUrl' => $this->setupUrl,
+                'resetUrl' => $resetUrl,
                 'appName' => config('app.name', 'AsyncAfrica'),
             ]);
     }
@@ -36,7 +47,7 @@ class AccountSetupNotification extends Notification
     public function toArray(object $notifiable): array
     {
         return [
-            'setup_url' => $this->setupUrl,
+            'email' => $this->email,
         ];
     }
 }
