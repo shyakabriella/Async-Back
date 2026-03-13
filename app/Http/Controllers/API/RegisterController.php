@@ -7,6 +7,7 @@ use App\Models\Program;
 use App\Models\Role;
 use App\Models\User;
 use App\Notifications\AccountSetupNotification;
+use App\Notifications\ResetPasswordLinkNotification;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
@@ -170,24 +171,38 @@ class RegisterController extends BaseController
      * Send forgot password email
      */
     public function forgotPassword(Request $request): JsonResponse
-    {
-        $validator = Validator::make($request->all(), [
-            'email' => 'required|email',
-        ]);
+{
+    $validator = Validator::make($request->all(), [
+        'email' => 'required|email',
+    ]);
 
-        if ($validator->fails()) {
-            return $this->sendError('Validation Error.', $validator->errors(), 422);
-        }
-
-        Password::sendResetLink([
-            'email' => $request->email,
-        ]);
-
-        return response()->json([
-            'success' => true,
-            'message' => 'If the email exists, a password reset link has been sent.',
-        ], 200);
+    if ($validator->fails()) {
+        return $this->sendError('Validation Error.', $validator->errors(), 422);
     }
+
+    $user = User::where('email', $request->email)->first();
+
+    if ($user) {
+        try {
+            $token = Password::broker()->createToken($user);
+
+            $user->notify(new ResetPasswordLinkNotification(
+                $token,
+                $user->email
+            ));
+        } catch (\Throwable $e) {
+            Log::error('Failed to send forgot password email.', [
+                'email' => $request->email,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    return response()->json([
+        'success' => true,
+        'message' => 'If the email exists, a password reset link has been sent.',
+    ], 200);
+}
 
     /**
      * Reset password API

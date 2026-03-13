@@ -9,7 +9,7 @@ return [
     'allowed_origins' => [
         'https://www.asyncafrica.com',
         'https://asyncafrica.com',
-        
+         
     ],
 
     'allowed_origins_patterns' => [],

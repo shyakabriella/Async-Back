@@ -8,6 +8,11 @@ use App\Http\Controllers\API\AttendanceController;
 use App\Http\Controllers\API\TrainingProgramController;
 use App\Http\Controllers\API\ProgramApplicationController;
 
+/*
+|--------------------------------------------------------------------------
+| Public authentication routes
+|--------------------------------------------------------------------------
+*/
 Route::controller(RegisterController::class)->group(function () {
     Route::post('register', 'register');
     Route::post('login', 'login');
@@ -46,7 +51,7 @@ Route::get('programs/{program}/curriculum', [ProgramController::class, 'curricul
 
 /*
 |--------------------------------------------------------------------------
-| Student submits application
+| Public program applications
 |--------------------------------------------------------------------------
 */
 Route::post('applications', [ProgramApplicationController::class, 'store']);
@@ -57,15 +62,15 @@ Route::post('applications', [ProgramApplicationController::class, 'store']);
 |--------------------------------------------------------------------------
 */
 Route::prefix('support-chat')->group(function () {
-    Route::get('/status', [SupportChatController::class, 'status']);
-    Route::post('/session', [SupportChatController::class, 'startSession']);
-    Route::get('/session/{token}', [SupportChatController::class, 'showSession']);
-    Route::post('/session/{token}/message', [SupportChatController::class, 'sendGuestMessage']);
+    Route::get('status', [SupportChatController::class, 'status']);
+    Route::post('session', [SupportChatController::class, 'startSession']);
+    Route::get('session/{token}', [SupportChatController::class, 'showSession']);
+    Route::post('session/{token}/message', [SupportChatController::class, 'sendGuestMessage']);
 });
 
 /*
 |--------------------------------------------------------------------------
-| Protected routes for admin/dashboard
+| Protected routes for authenticated users
 |--------------------------------------------------------------------------
 */
 Route::middleware('auth:sanctum')->group(function () {
@@ -80,7 +85,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
         /*
         |--------------------------------------------------------------------------
-        | User management routes (inside RegisterController)
+        | User management routes
         |--------------------------------------------------------------------------
         */
         Route::get('users', 'index');
@@ -93,7 +98,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
         /*
         |--------------------------------------------------------------------------
-        | Optional helper routes
+        | Helper option routes
         |--------------------------------------------------------------------------
         */
         Route::get('roles', 'roles');
@@ -104,7 +109,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     /*
     |--------------------------------------------------------------------------
-    | Programs
+    | Protected program routes
     |--------------------------------------------------------------------------
     */
     Route::apiResource('programs', ProgramController::class)->except(['index', 'show']);
@@ -122,13 +127,13 @@ Route::middleware('auth:sanctum')->group(function () {
 
     /*
     |--------------------------------------------------------------------------
-    | Admin manages applications
+    | Protected application management
     |--------------------------------------------------------------------------
     */
     Route::get('applications', [ProgramApplicationController::class, 'index']);
     Route::get('applications/{id}', [ProgramApplicationController::class, 'show']);
-    Route::patch('applications/{id}', [ProgramApplicationController::class, 'update']);
     Route::put('applications/{id}', [ProgramApplicationController::class, 'update']);
+    Route::patch('applications/{id}', [ProgramApplicationController::class, 'update']);
     Route::delete('applications/{id}', [ProgramApplicationController::class, 'destroy']);
 
     /*
@@ -144,11 +149,11 @@ Route::middleware('auth:sanctum')->group(function () {
     |--------------------------------------------------------------------------
     */
     Route::prefix('support-chat/agent')->group(function () {
-        Route::get('/conversations', [SupportChatController::class, 'agentConversations']);
-        Route::get('/conversations/{id}', [SupportChatController::class, 'agentShowConversation']);
-        Route::post('/conversations/{id}/message', [SupportChatController::class, 'agentSendMessage']);
-        Route::post('/conversations/{id}/take-over', [SupportChatController::class, 'takeOver']);
-        Route::post('/conversations/{id}/close', [SupportChatController::class, 'closeConversation']);
-        Route::post('/presence', [SupportChatController::class, 'agentPresence']);
+        Route::get('conversations', [SupportChatController::class, 'agentConversations']);
+        Route::get('conversations/{id}', [SupportChatController::class, 'agentShowConversation']);
+        Route::post('conversations/{id}/message', [SupportChatController::class, 'agentSendMessage']);
+        Route::post('conversations/{id}/take-over', [SupportChatController::class, 'takeOver']);
+        Route::post('conversations/{id}/close', [SupportChatController::class, 'closeConversation']);
+        Route::post('presence', [SupportChatController::class, 'agentPresence']);
     });
 });

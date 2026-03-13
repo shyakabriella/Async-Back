@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Set Up Your Account</title>
+    <title>Reset Your Password</title>
 </head>
 <body style="margin:0; padding:0; background-color:#0b1020; font-family:Arial, Helvetica, sans-serif; color:#ffffff;">
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color:#0b1020; padding:30px 15px;">
@@ -16,7 +16,7 @@
                             </p>
 
                             <h1 style="margin:14px 0 0; font-size:28px; line-height:1.3; color:#ffffff;">
-                                Welcome to {{ $appName }}
+                                Reset Your Password
                             </h1>
 
                             <p style="margin:14px 0 0; font-size:15px; line-height:1.8; color:#d7dbef;">
@@ -24,21 +24,17 @@
                             </p>
 
                             <p style="margin:14px 0 0; font-size:15px; line-height:1.8; color:#d7dbef;">
-                                Your account has been created successfully. To activate your account and create your password, please open the secure password setup page using the button below.
+                                We received a request to reset your password. Click the button below to open the secure password reset page.
                             </p>
 
                             <div style="margin:28px 0;">
                                 <a href="{{ $resetUrl }}"
                                    style="display:inline-block; background-color:#6050F0; color:#ffffff; text-decoration:none; font-size:15px; font-weight:bold; padding:14px 24px; border-radius:12px;">
-                                    Set My Password
+                                    Reset My Password
                                 </a>
                             </div>
 
                             <p style="margin:0; font-size:14px; line-height:1.8; color:#d7dbef;">
-                                After opening the page, you will enter your new password and submit it securely.
-                            </p>
-
-                            <p style="margin:14px 0 0; font-size:14px; line-height:1.8; color:#d7dbef;">
                                 If the button does not work, copy and paste this link into your browser:
                             </p>
 
@@ -47,7 +43,7 @@
                             </p>
 
                             <p style="margin:24px 0 0; font-size:14px; line-height:1.8; color:#d7dbef;">
-                                For security reasons, please use this link as soon as possible.
+                                If you did not request a password reset, you can safely ignore this email.
                             </p>
 
                             <p style="margin:24px 0 0; font-size:14px; line-height:1.8; color:#d7dbef;">
@@ -60,8 +56,7 @@
                     <tr>
                         <td style="padding:18px 32px; background:#0d1428; border-top:1px solid rgba(255,255,255,0.06);">
                             <p style="margin:0; font-size:12px; line-height:1.7; color:#99a3c7;">
-                                This email was sent because an account was created for you on {{ $appName }}.
-                                If you were not expecting this email, please contact support.
+                                This password reset email was sent from {{ $appName }}.
                             </p>
                         </td>
                     </tr>
