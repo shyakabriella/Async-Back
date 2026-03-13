@@ -28,7 +28,7 @@
                             </p>
 
                             <div style="margin:28px 0;">
-                                <a href="{{ $resetUrl }}"
+                                <a href="{{ $setupUrl }}"
                                    style="display:inline-block; background-color:#6050F0; color:#ffffff; text-decoration:none; font-size:15px; font-weight:bold; padding:14px 24px; border-radius:12px;">
                                     Set My Password
                                 </a>
@@ -43,7 +43,7 @@
                             </p>
 
                             <p style="margin:12px 0 0; font-size:13px; line-height:1.8; color:#b7c0e0; word-break:break-all;">
-                                {{ $resetUrl }}
+                                {{ $setupUrl }}
                             </p>
 
                             <p style="margin:24px 0 0; font-size:14px; line-height:1.8; color:#d7dbef;">
