@@ -14,6 +14,8 @@ use Illuminate\Validation\Rule;
 
 class ProgramController extends Controller
 {
+    private ?array $programTableColumns = null;
+
     public function index()
     {
         $programs = Program::with('users:id,name,email,phone')
@@ -52,36 +54,7 @@ class ProgramController extends Controller
 
         $data = $validator->validated();
 
-        $program = Program::create([
-            'code' => $this->generateProgramCode($data['name']),
-            'slug' => $data['slug'] ?? null,
-            'name' => $data['name'],
-            'badge' => $data['badge'] ?? null,
-            'category' => $data['category'],
-            'duration' => $data['duration'],
-            'level' => $data['level'] ?? null,
-            'format' => $data['format'] ?? null,
-            'status' => $data['status'],
-            'instructor' => $data['instructor'],
-            'students' => $data['students'] ?? 0,
-            'price' => $data['price'] ?? 0,
-            'start_date' => $data['start_date'],
-            'end_date' => $data['end_date'] ?? null,
-            'image' => $data['image'] ?? null,
-            'intro' => $data['intro'] ?? null,
-            'description' => $data['description'] ?? null,
-            'overview' => $data['overview'] ?? null,
-            'icon_key' => $data['icon_key'] ?? null,
-            'is_active' => array_key_exists('is_active', $data) ? (bool) $data['is_active'] : true,
-            'objectives' => $data['objectives'] ?? [],
-            'modules' => $data['modules'] ?? [],
-            'curriculum' => $this->prepareCurriculum($request->input('curriculum', [])),
-            'skills' => $data['skills'] ?? [],
-            'outcomes' => $data['outcomes'] ?? [],
-            'tools' => $data['tools'] ?? [],
-            'experience_levels' => $data['experience_levels'] ?? [],
-            'shifts' => $this->prepareShifts($request->input('shifts', [])),
-        ]);
+        $program = Program::create($this->buildProgramCreatePayload($data, $request));
 
         if (
             Schema::hasTable('program_user') &&
@@ -149,43 +122,7 @@ class ProgramController extends Controller
 
         $data = $validator->validated();
 
-        $incomingShifts = array_key_exists('shifts', $request->all())
-            ? $this->prepareShifts($request->input('shifts', []))
-            : $program->shifts;
-
-        $program->update([
-            'slug' => array_key_exists('slug', $data) ? $data['slug'] : $program->slug,
-            'name' => $data['name'] ?? $program->name,
-            'badge' => array_key_exists('badge', $data) ? $data['badge'] : $program->badge,
-            'category' => $data['category'] ?? $program->category,
-            'duration' => $data['duration'] ?? $program->duration,
-            'level' => array_key_exists('level', $data) ? $data['level'] : $program->level,
-            'format' => array_key_exists('format', $data) ? $data['format'] : $program->format,
-            'status' => $data['status'] ?? $program->status,
-            'instructor' => $data['instructor'] ?? $program->instructor,
-            'students' => array_key_exists('students', $data) ? $data['students'] : $program->students,
-            'price' => array_key_exists('price', $data) ? $data['price'] : $program->price,
-            'start_date' => $data['start_date'] ?? $program->start_date,
-            'end_date' => array_key_exists('end_date', $data) ? $data['end_date'] : $program->end_date,
-            'image' => array_key_exists('image', $data) ? $data['image'] : $program->image,
-            'intro' => array_key_exists('intro', $data) ? $data['intro'] : $program->intro,
-            'description' => array_key_exists('description', $data) ? $data['description'] : $program->description,
-            'overview' => array_key_exists('overview', $data) ? $data['overview'] : $program->overview,
-            'icon_key' => array_key_exists('icon_key', $data) ? $data['icon_key'] : $program->icon_key,
-            'is_active' => array_key_exists('is_active', $data) ? (bool) $data['is_active'] : $program->is_active,
-            'objectives' => array_key_exists('objectives', $data) ? $data['objectives'] : $program->objectives,
-            'modules' => array_key_exists('modules', $data) ? $data['modules'] : $program->modules,
-            'curriculum' => array_key_exists('curriculum', $request->all())
-                ? $this->prepareCurriculum($request->input('curriculum', []))
-                : $program->curriculum,
-            'skills' => array_key_exists('skills', $data) ? $data['skills'] : $program->skills,
-            'outcomes' => array_key_exists('outcomes', $data) ? $data['outcomes'] : $program->outcomes,
-            'tools' => array_key_exists('tools', $data) ? $data['tools'] : $program->tools,
-            'experience_levels' => array_key_exists('experience_levels', $data)
-                ? $data['experience_levels']
-                : $program->experience_levels,
-            'shifts' => $incomingShifts,
-        ]);
+        $program->update($this->buildProgramUpdatePayload($program, $data, $request));
 
         if (
             Schema::hasTable('program_user') &&
@@ -450,18 +387,18 @@ class ProgramController extends Controller
     {
         return [
             'slug' => 'nullable|string|max:255',
-            'name' => 'required|string|max:255',
+            'name' => 'nullable|string|max:255',
             'badge' => 'nullable|string|max:255',
-            'category' => 'required|string|max:255',
-            'duration' => 'required|string|max:255',
+            'category' => 'nullable|string|max:255',
+            'duration' => 'nullable|string|max:255',
             'level' => 'nullable|string|max:255',
             'format' => 'nullable|string|max:255',
-            'status' => 'required|in:Active,Draft,Archived',
-            'instructor' => 'required|string|max:255',
+            'status' => 'nullable|in:Active,Draft,Archived',
+            'instructor' => 'nullable|string|max:255',
             'students' => 'nullable|integer|min:0',
-            'price' => 'required|numeric|min:0',
-            'start_date' => 'required|date',
-            'end_date' => 'nullable|date|after_or_equal:start_date',
+            'price' => 'nullable|numeric|min:0',
+            'start_date' => 'nullable|date',
+            'end_date' => 'nullable|date',
             'image' => 'nullable|string',
             'intro' => 'nullable|string',
             'description' => 'nullable|string',
@@ -502,17 +439,17 @@ class ProgramController extends Controller
     {
         return [
             'slug' => 'nullable|string|max:255',
-            'name' => 'sometimes|required|string|max:255',
+            'name' => 'nullable|string|max:255',
             'badge' => 'nullable|string|max:255',
-            'category' => 'sometimes|required|string|max:255',
-            'duration' => 'sometimes|required|string|max:255',
+            'category' => 'nullable|string|max:255',
+            'duration' => 'nullable|string|max:255',
             'level' => 'nullable|string|max:255',
             'format' => 'nullable|string|max:255',
-            'status' => 'sometimes|required|in:Active,Draft,Archived',
-            'instructor' => 'sometimes|required|string|max:255',
+            'status' => 'nullable|in:Active,Draft,Archived',
+            'instructor' => 'nullable|string|max:255',
             'students' => 'nullable|integer|min:0',
             'price' => 'nullable|numeric|min:0',
-            'start_date' => 'sometimes|required|date',
+            'start_date' => 'nullable|date',
             'end_date' => 'nullable|date',
             'image' => 'nullable|string',
             'intro' => 'nullable|string',
@@ -563,6 +500,134 @@ class ProgramController extends Controller
     private function activeApplicationStatuses(): array
     {
         return ['Pending', 'Reviewed', 'Accepted'];
+    }
+
+    private function getProgramTableColumns(): array
+    {
+        if ($this->programTableColumns !== null) {
+            return $this->programTableColumns;
+        }
+
+        if (!Schema::hasTable('programs')) {
+            $this->programTableColumns = [];
+            return $this->programTableColumns;
+        }
+
+        $this->programTableColumns = Schema::getColumnListing('programs');
+
+        return $this->programTableColumns;
+    }
+
+    private function programTableHasColumn(string $column): bool
+    {
+        return in_array($column, $this->getProgramTableColumns(), true);
+    }
+
+    private function setProgramColumnValue(array &$payload, string $column, $value): void
+    {
+        if ($this->programTableHasColumn($column)) {
+            $payload[$column] = $value;
+        }
+    }
+
+    private function buildProgramCreatePayload(array $data, Request $request): array
+    {
+        $name = trim((string) ($data['name'] ?? ''));
+        if ($name === '') {
+            $name = 'Untitled Program';
+        }
+
+        $payload = [];
+
+        $this->setProgramColumnValue($payload, 'code', $this->generateProgramCode($name));
+        $this->setProgramColumnValue($payload, 'slug', $data['slug'] ?? null);
+        $this->setProgramColumnValue($payload, 'name', $name);
+        $this->setProgramColumnValue($payload, 'badge', $data['badge'] ?? null);
+        $this->setProgramColumnValue($payload, 'category', $data['category'] ?? null);
+        $this->setProgramColumnValue($payload, 'duration', $data['duration'] ?? null);
+        $this->setProgramColumnValue($payload, 'level', $data['level'] ?? null);
+        $this->setProgramColumnValue($payload, 'format', $data['format'] ?? null);
+        $this->setProgramColumnValue($payload, 'status', $data['status'] ?? 'Draft');
+        $this->setProgramColumnValue($payload, 'instructor', $data['instructor'] ?? null);
+        $this->setProgramColumnValue($payload, 'students', (int) ($data['students'] ?? 0));
+        $this->setProgramColumnValue($payload, 'price', (float) ($data['price'] ?? 0));
+        $this->setProgramColumnValue($payload, 'start_date', $data['start_date'] ?? null);
+        $this->setProgramColumnValue($payload, 'end_date', $data['end_date'] ?? null);
+        $this->setProgramColumnValue($payload, 'image', $data['image'] ?? null);
+        $this->setProgramColumnValue($payload, 'intro', $data['intro'] ?? null);
+        $this->setProgramColumnValue($payload, 'description', $data['description'] ?? null);
+        $this->setProgramColumnValue($payload, 'overview', $data['overview'] ?? null);
+        $this->setProgramColumnValue($payload, 'icon_key', $data['icon_key'] ?? null);
+        $this->setProgramColumnValue($payload, 'is_active', array_key_exists('is_active', $data) ? (bool) $data['is_active'] : true);
+        $this->setProgramColumnValue($payload, 'objectives', $data['objectives'] ?? []);
+        $this->setProgramColumnValue($payload, 'modules', $data['modules'] ?? []);
+        $this->setProgramColumnValue($payload, 'curriculum', $this->prepareCurriculum($request->input('curriculum', [])));
+        $this->setProgramColumnValue($payload, 'skills', $data['skills'] ?? []);
+        $this->setProgramColumnValue($payload, 'outcomes', $data['outcomes'] ?? []);
+        $this->setProgramColumnValue($payload, 'tools', $data['tools'] ?? []);
+        $this->setProgramColumnValue($payload, 'experience_levels', $data['experience_levels'] ?? []);
+        $this->setProgramColumnValue($payload, 'shifts', $this->prepareShifts($request->input('shifts', [])));
+
+        return $payload;
+    }
+
+    private function buildProgramUpdatePayload(Program $program, array $data, Request $request): array
+    {
+        $name = array_key_exists('name', $data)
+            ? trim((string) $data['name'])
+            : (string) ($program->name ?? '');
+
+        if ($name === '') {
+            $name = (string) ($program->name ?? 'Untitled Program');
+        }
+
+        $incomingShifts = array_key_exists('shifts', $request->all())
+            ? $this->prepareShifts($request->input('shifts', []))
+            : ($program->shifts ?? []);
+
+        $payload = [];
+
+        $this->setProgramColumnValue($payload, 'slug', array_key_exists('slug', $data) ? $data['slug'] : $program->slug);
+        $this->setProgramColumnValue($payload, 'name', $name);
+        $this->setProgramColumnValue($payload, 'badge', array_key_exists('badge', $data) ? $data['badge'] : $program->badge);
+        $this->setProgramColumnValue($payload, 'category', array_key_exists('category', $data) ? $data['category'] : $program->category);
+        $this->setProgramColumnValue($payload, 'duration', array_key_exists('duration', $data) ? $data['duration'] : $program->duration);
+        $this->setProgramColumnValue($payload, 'level', array_key_exists('level', $data) ? $data['level'] : $program->level);
+        $this->setProgramColumnValue($payload, 'format', array_key_exists('format', $data) ? $data['format'] : $program->format);
+        $this->setProgramColumnValue($payload, 'status', array_key_exists('status', $data) ? $data['status'] : $program->status);
+        $this->setProgramColumnValue($payload, 'instructor', array_key_exists('instructor', $data) ? $data['instructor'] : $program->instructor);
+        $this->setProgramColumnValue($payload, 'students', array_key_exists('students', $data) ? (int) $data['students'] : (int) ($program->students ?? 0));
+        $this->setProgramColumnValue($payload, 'price', array_key_exists('price', $data) ? (float) $data['price'] : (float) ($program->price ?? 0));
+        $this->setProgramColumnValue($payload, 'start_date', array_key_exists('start_date', $data) ? $data['start_date'] : $program->start_date);
+        $this->setProgramColumnValue($payload, 'end_date', array_key_exists('end_date', $data) ? $data['end_date'] : $program->end_date);
+        $this->setProgramColumnValue($payload, 'image', array_key_exists('image', $data) ? $data['image'] : $program->image);
+        $this->setProgramColumnValue($payload, 'intro', array_key_exists('intro', $data) ? $data['intro'] : $program->intro);
+        $this->setProgramColumnValue($payload, 'description', array_key_exists('description', $data) ? $data['description'] : $program->description);
+        $this->setProgramColumnValue($payload, 'overview', array_key_exists('overview', $data) ? $data['overview'] : $program->overview);
+        $this->setProgramColumnValue($payload, 'icon_key', array_key_exists('icon_key', $data) ? $data['icon_key'] : $program->icon_key);
+        $this->setProgramColumnValue($payload, 'is_active', array_key_exists('is_active', $data) ? (bool) $data['is_active'] : $program->is_active);
+        $this->setProgramColumnValue($payload, 'objectives', array_key_exists('objectives', $data) ? $data['objectives'] : ($program->objectives ?? []));
+        $this->setProgramColumnValue($payload, 'modules', array_key_exists('modules', $data) ? $data['modules'] : ($program->modules ?? []));
+        $this->setProgramColumnValue(
+            $payload,
+            'curriculum',
+            array_key_exists('curriculum', $request->all())
+                ? $this->prepareCurriculum($request->input('curriculum', []))
+                : ($program->curriculum ?? [])
+        );
+        $this->setProgramColumnValue($payload, 'skills', array_key_exists('skills', $data) ? $data['skills'] : ($program->skills ?? []));
+        $this->setProgramColumnValue($payload, 'outcomes', array_key_exists('outcomes', $data) ? $data['outcomes'] : ($program->outcomes ?? []));
+        $this->setProgramColumnValue($payload, 'tools', array_key_exists('tools', $data) ? $data['tools'] : ($program->tools ?? []));
+        $this->setProgramColumnValue(
+            $payload,
+            'experience_levels',
+            array_key_exists('experience_levels', $data)
+                ? $data['experience_levels']
+                : ($program->experience_levels ?? [])
+        );
+        $this->setProgramColumnValue($payload, 'shifts', $incomingShifts);
+
+        return $payload;
     }
 
     private function normalizeIncomingCurriculum($curriculum): array

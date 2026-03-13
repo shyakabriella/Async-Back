@@ -6,6 +6,7 @@ use App\Http\Controllers\API\BaseController as BaseController;
 use App\Models\Program;
 use App\Models\Role;
 use App\Models\User;
+use App\Notifications\AccountSetupNotification;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
@@ -41,7 +42,7 @@ class RegisterController extends BaseController
         );
 
         if ($validator->fails()) {
-            return $this->sendError('Validation Error.', $validator->errors());
+            return $this->sendError('Validation Error.', $validator->errors(), 422);
         }
 
         $user = User::create([
@@ -107,7 +108,7 @@ class RegisterController extends BaseController
         );
 
         if ($validator->fails()) {
-            return $this->sendError('Validation Error.', $validator->errors());
+            return $this->sendError('Validation Error.', $validator->errors(), 422);
         }
 
         $loginField = $request->filled('email') ? 'email' : 'phone';
@@ -120,7 +121,7 @@ class RegisterController extends BaseController
         if (!Auth::attempt($credentials)) {
             return $this->sendError('Unauthorised.', [
                 'error' => 'Invalid credentials',
-            ]);
+            ], 401);
         }
 
         /** @var \App\Models\User|null $user */
@@ -129,7 +130,7 @@ class RegisterController extends BaseController
         if (!$user) {
             return $this->sendError('Unauthorised.', [
                 'error' => 'User not found after authentication.',
-            ]);
+            ], 401);
         }
 
         if (!$user->is_active || $user->status !== 'active') {
@@ -137,7 +138,7 @@ class RegisterController extends BaseController
 
             return $this->sendError('Account access denied.', [
                 'error' => 'Your account is inactive or suspended.',
-            ]);
+            ], 403);
         }
 
         $user->update([
@@ -154,7 +155,7 @@ class RegisterController extends BaseController
 
             return $this->sendError('Account role error.', [
                 'error' => 'No valid role is assigned to this user.',
-            ]);
+            ], 403);
         }
 
         $success = [
@@ -175,10 +176,9 @@ class RegisterController extends BaseController
         ]);
 
         if ($validator->fails()) {
-            return $this->sendError('Validation Error.', $validator->errors());
+            return $this->sendError('Validation Error.', $validator->errors(), 422);
         }
 
-        // Generic message to avoid exposing whether the email exists
         Password::sendResetLink([
             'email' => $request->email,
         ]);
@@ -201,7 +201,7 @@ class RegisterController extends BaseController
         ]);
 
         if ($validator->fails()) {
-            return $this->sendError('Validation Error.', $validator->errors());
+            return $this->sendError('Validation Error.', $validator->errors(), 422);
         }
 
         $status = Password::reset(
@@ -334,30 +334,30 @@ class RegisterController extends BaseController
 
     /**
      * Admin create user
+     * Password is auto-generated internally.
+     * Email is required so user can receive setup/reset link.
      */
     public function store(Request $request): JsonResponse
     {
         $validator = Validator::make(
             $request->all(),
             [
-                'name'        => 'required|string|max:255',
-                'email'       => 'nullable|email|max:255|unique:users,email|required_without:phone',
-                'phone'       => 'nullable|string|max:20|unique:users,phone|required_without:email',
-                'password'    => 'required|string|min:8',
-                'status'      => ['nullable', Rule::in(['active', 'inactive', 'suspended'])],
-                'is_active'   => 'nullable|boolean',
-                'role_slug'   => ['nullable', 'string', Rule::in(['admin', 'ceo', 'trainer', 'student'])],
-                'program_ids' => 'nullable|array',
+                'name'          => 'required|string|max:255',
+                'email'         => 'required|email|max:255|unique:users,email',
+                'phone'         => 'nullable|string|max:20|unique:users,phone',
+                'status'        => ['nullable', Rule::in(['active', 'inactive', 'suspended'])],
+                'is_active'     => 'nullable|boolean',
+                'role_slug'     => ['nullable', 'string', Rule::in(['admin', 'ceo', 'trainer', 'student'])],
+                'program_ids'   => 'nullable|array',
                 'program_ids.*' => 'integer|exists:programs,id',
             ],
             [
-                'email.required_without' => 'Email or phone is required.',
-                'phone.required_without' => 'Phone or email is required.',
+                'email.required' => 'Email is required so the user can receive account setup instructions.',
             ]
         );
 
         if ($validator->fails()) {
-            return $this->sendError('Validation Error.', $validator->errors());
+            return $this->sendError('Validation Error.', $validator->errors(), 422);
         }
 
         $status = $request->input('status', 'active');
@@ -365,11 +365,13 @@ class RegisterController extends BaseController
             ? (bool) $request->boolean('is_active')
             : $status === 'active';
 
+        $generatedPassword = Str::random(32);
+
         $user = User::create([
-            'name'          => trim($request->name),
-            'email'         => $request->email,
+            'name'          => trim((string) $request->name),
+            'email'         => trim((string) $request->email),
             'phone'         => $request->phone,
-            'password'      => Hash::make($request->password),
+            'password'      => Hash::make($generatedPassword),
             'status'        => $status,
             'is_active'     => $isActive,
             'last_login_at' => null,
@@ -380,24 +382,19 @@ class RegisterController extends BaseController
         $this->loadUserRelations($user);
 
         $emailSetupSent = false;
-        $emailSetupMessage = null;
+        $emailSetupMessage = 'User created successfully, but account setup email could not be sent.';
 
-        if (!empty($user->email)) {
-            try {
-                $emailSetupSent = $this->sendAccountSetupEmail($user);
-                $emailSetupMessage = $emailSetupSent
-                    ? 'Account setup email sent successfully.'
-                    : 'User created, but account setup email could not be sent.';
-            } catch (\Throwable $e) {
-                Log::error('Failed to send account setup email for admin-created user.', [
-                    'user_id' => $user->id,
-                    'email'   => $user->email,
-                    'error'   => $e->getMessage(),
-                ]);
-
-                $emailSetupSent = false;
-                $emailSetupMessage = 'User created, but account setup email could not be sent.';
-            }
+        try {
+            $emailSetupSent = $this->sendAccountSetupEmail($user);
+            $emailSetupMessage = $emailSetupSent
+                ? 'User created successfully. Account setup email sent successfully.'
+                : 'User created successfully, but account setup email could not be sent.';
+        } catch (\Throwable $e) {
+            Log::error('Failed to send account setup email for admin-created user.', [
+                'user_id' => $user->id,
+                'email'   => $user->email,
+                'error'   => $e->getMessage(),
+            ]);
         }
 
         return response()->json([
@@ -455,30 +452,30 @@ class RegisterController extends BaseController
         $validator = Validator::make(
             $request->all(),
             [
-                'name'        => 'sometimes|required|string|max:255',
-                'email'       => [
+                'name' => 'sometimes|required|string|max:255',
+                'email' => [
                     'nullable',
                     'email',
                     'max:255',
                     Rule::unique('users', 'email')->ignore($user->id),
                 ],
-                'phone'       => [
+                'phone' => [
                     'nullable',
                     'string',
                     'max:20',
                     Rule::unique('users', 'phone')->ignore($user->id),
                 ],
-                'password'    => 'nullable|string|min:8',
-                'status'      => ['nullable', Rule::in(['active', 'inactive', 'suspended'])],
-                'is_active'   => 'nullable|boolean',
-                'role_slug'   => ['nullable', 'string', Rule::in(['admin', 'ceo', 'trainer', 'student'])],
+                'password' => 'nullable|string|min:8',
+                'status' => ['nullable', Rule::in(['active', 'inactive', 'suspended'])],
+                'is_active' => 'nullable|boolean',
+                'role_slug' => ['nullable', 'string', Rule::in(['admin', 'ceo', 'trainer', 'student'])],
                 'program_ids' => 'nullable|array',
                 'program_ids.*' => 'integer|exists:programs,id',
             ]
         );
 
         if ($validator->fails()) {
-            return $this->sendError('Validation Error.', $validator->errors());
+            return $this->sendError('Validation Error.', $validator->errors(), 422);
         }
 
         $payload = [];
@@ -709,7 +706,7 @@ class RegisterController extends BaseController
         ]);
 
         if ($validator->fails()) {
-            return $this->sendError('Validation Error.', $validator->errors());
+            return $this->sendError('Validation Error.', $validator->errors(), 422);
         }
 
         if (Schema::hasTable('program_user')) {
@@ -738,7 +735,7 @@ class RegisterController extends BaseController
     }
 
     /**
-     * Send account setup / reset password email
+     * Send account setup email with password reset link
      */
     private function sendAccountSetupEmail(User $user): bool
     {
@@ -747,7 +744,8 @@ class RegisterController extends BaseController
         }
 
         $token = Password::broker()->createToken($user);
-        $user->sendPasswordResetNotification($token);
+
+        $user->notify(new AccountSetupNotification($token, $user->email));
 
         return true;
     }
