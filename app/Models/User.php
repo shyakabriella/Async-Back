@@ -3,8 +3,11 @@
 namespace App\Models;
 
 use App\Models\Role;
+use App\Models\Program;
+use App\Models\Wallet;
 use App\Models\AgentPresence;
 use App\Models\ChatConversation;
+use App\Models\TrainerAttendance;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
@@ -22,6 +25,7 @@ class User extends Authenticatable
         'status',
         'is_active',
         'last_login_at',
+        'daily_rate',
     ];
 
     protected $hidden = [
@@ -35,6 +39,7 @@ class User extends Authenticatable
             'email_verified_at' => 'datetime',
             'last_login_at'     => 'datetime',
             'is_active'         => 'boolean',
+            'daily_rate'        => 'decimal:2',
             'password'          => 'hashed',
         ];
     }
@@ -48,6 +53,26 @@ class User extends Authenticatable
     {
         return $this->belongsToMany(Program::class, 'program_user')
             ->withTimestamps();
+    }
+
+    public function wallet()
+    {
+        return $this->hasOne(Wallet::class);
+    }
+
+    public function trainerAttendances()
+    {
+        return $this->hasMany(TrainerAttendance::class, 'trainer_id');
+    }
+
+    public function markedTrainerAttendances()
+    {
+        return $this->hasMany(TrainerAttendance::class, 'marked_by');
+    }
+
+    public function paidTrainerAttendances()
+    {
+        return $this->hasMany(TrainerAttendance::class, 'paid_by');
     }
 
     public function hasRole(string $slug): bool

@@ -5,6 +5,7 @@ use App\Http\Controllers\API\RegisterController;
 use App\Http\Controllers\API\ProgramController;
 use App\Http\Controllers\API\SupportChatController;
 use App\Http\Controllers\API\AttendanceController;
+use App\Http\Controllers\API\TrainerAttendanceController;
 use App\Http\Controllers\API\TrainingProgramController;
 use App\Http\Controllers\API\ProgramApplicationController;
 
@@ -138,10 +139,23 @@ Route::middleware('auth:sanctum')->group(function () {
 
     /*
     |--------------------------------------------------------------------------
-    | Attendance routes
+    | Student/Trainee attendance routes
     |--------------------------------------------------------------------------
     */
     Route::apiResource('attendances', AttendanceController::class);
+
+    /*
+    |--------------------------------------------------------------------------
+    | Trainer attendance routes
+    |--------------------------------------------------------------------------
+    */
+    Route::get('trainer-attendances', [TrainerAttendanceController::class, 'index']);
+    Route::post('trainer-attendances', [TrainerAttendanceController::class, 'store']);
+    Route::get('trainer-attendances/{id}', [TrainerAttendanceController::class, 'show']);
+    Route::put('trainer-attendances/{id}', [TrainerAttendanceController::class, 'update']);
+    Route::patch('trainer-attendances/{id}', [TrainerAttendanceController::class, 'update']);
+    Route::delete('trainer-attendances/{id}', [TrainerAttendanceController::class, 'destroy']);
+    Route::post('trainer-attendances/{id}/pay', [TrainerAttendanceController::class, 'pay']);
 
     /*
     |--------------------------------------------------------------------------

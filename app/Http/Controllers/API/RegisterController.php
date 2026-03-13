@@ -6,8 +6,8 @@ use App\Http\Controllers\API\BaseController as BaseController;
 use App\Models\Program;
 use App\Models\Role;
 use App\Models\User;
+use App\Models\Wallet;
 use App\Notifications\AccountSetupNotification;
-use App\Notifications\ResetPasswordLinkNotification;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
@@ -46,18 +46,25 @@ class RegisterController extends BaseController
             return $this->sendError('Validation Error.', $validator->errors(), 422);
         }
 
-        $user = User::create([
-            'name'          => trim($request->name),
+        $userPayload = [
+            'name'          => trim((string) $request->name),
             'email'         => $request->email,
             'phone'         => $request->phone,
             'password'      => Hash::make($request->password),
             'status'        => 'active',
             'is_active'     => true,
             'last_login_at' => null,
-        ]);
+        ];
+
+        if (Schema::hasColumn('users', 'daily_rate')) {
+            $userPayload['daily_rate'] = 0;
+        }
+
+        $user = User::create($userPayload);
 
         $this->assignUserRole($user, 'student');
         $this->loadUserRelations($user);
+        $this->ensureTrainerWallet($user);
 
         $emailSetupSent = false;
         $emailSetupMessage = null;
@@ -148,6 +155,7 @@ class RegisterController extends BaseController
 
         $user->refresh();
         $this->loadUserRelations($user);
+        $this->ensureTrainerWallet($user);
 
         $primaryRole = $this->resolvePrimaryRole($user->roles);
 
@@ -171,38 +179,31 @@ class RegisterController extends BaseController
      * Send forgot password email
      */
     public function forgotPassword(Request $request): JsonResponse
-{
-    $validator = Validator::make($request->all(), [
-        'email' => 'required|email',
-    ]);
+    {
+        $validator = Validator::make($request->all(), [
+            'email' => 'required|email',
+        ]);
 
-    if ($validator->fails()) {
-        return $this->sendError('Validation Error.', $validator->errors(), 422);
-    }
+        if ($validator->fails()) {
+            return $this->sendError('Validation Error.', $validator->errors(), 422);
+        }
 
-    $user = User::where('email', $request->email)->first();
-
-    if ($user) {
         try {
-            $token = Password::broker()->createToken($user);
-
-            $user->notify(new ResetPasswordLinkNotification(
-                $token,
-                $user->email
-            ));
+            Password::broker()->sendResetLink([
+                'email' => $request->email,
+            ]);
         } catch (\Throwable $e) {
             Log::error('Failed to send forgot password email.', [
                 'email' => $request->email,
                 'error' => $e->getMessage(),
             ]);
         }
-    }
 
-    return response()->json([
-        'success' => true,
-        'message' => 'If the email exists, a password reset link has been sent.',
-    ], 200);
-}
+        return response()->json([
+            'success' => true,
+            'message' => 'If the email exists, a password reset link has been sent.',
+        ], 200);
+    }
 
     /**
      * Reset password API
@@ -263,6 +264,7 @@ class RegisterController extends BaseController
         }
 
         $this->loadUserRelations($user);
+        $this->ensureTrainerWallet($user);
 
         return response()->json([
             'success' => true,
@@ -337,6 +339,7 @@ class RegisterController extends BaseController
         }
 
         $users = $query->get()->map(function (User $user) {
+            $this->ensureTrainerWallet($user);
             return $this->formatUser($user);
         })->values();
 
@@ -365,6 +368,7 @@ class RegisterController extends BaseController
                 'role_slug'     => ['nullable', 'string', Rule::in(['admin', 'ceo', 'trainer', 'student'])],
                 'program_ids'   => 'nullable|array',
                 'program_ids.*' => 'integer|exists:programs,id',
+                'daily_rate'    => 'nullable|numeric|min:0',
             ],
             [
                 'email.required' => 'Email is required so the user can receive account setup instructions.',
@@ -382,7 +386,7 @@ class RegisterController extends BaseController
 
         $generatedPassword = Str::random(32);
 
-        $user = User::create([
+        $userPayload = [
             'name'          => trim((string) $request->name),
             'email'         => trim((string) $request->email),
             'phone'         => $request->phone,
@@ -390,9 +394,16 @@ class RegisterController extends BaseController
             'status'        => $status,
             'is_active'     => $isActive,
             'last_login_at' => null,
-        ]);
+        ];
+
+        if (Schema::hasColumn('users', 'daily_rate')) {
+            $userPayload['daily_rate'] = (float) $request->input('daily_rate', 0);
+        }
+
+        $user = User::create($userPayload);
 
         $this->assignUserRole($user, $request->input('role_slug', 'student'));
+        $this->ensureTrainerWallet($user);
         $this->syncUserPrograms($user, $request->input('program_ids', []));
         $this->loadUserRelations($user);
 
@@ -440,6 +451,8 @@ class RegisterController extends BaseController
             ], 404);
         }
 
+        $this->ensureTrainerWallet($user);
+
         return response()->json([
             'success' => true,
             'message' => 'User retrieved successfully.',
@@ -486,6 +499,7 @@ class RegisterController extends BaseController
                 'role_slug' => ['nullable', 'string', Rule::in(['admin', 'ceo', 'trainer', 'student'])],
                 'program_ids' => 'nullable|array',
                 'program_ids.*' => 'integer|exists:programs,id',
+                'daily_rate' => 'nullable|numeric|min:0',
             ]
         );
 
@@ -521,12 +535,17 @@ class RegisterController extends BaseController
             $payload['is_active'] = $request->status === 'active';
         }
 
+        if (array_key_exists('daily_rate', $request->all()) && Schema::hasColumn('users', 'daily_rate')) {
+            $payload['daily_rate'] = (float) $request->input('daily_rate', 0);
+        }
+
         if (!empty($payload)) {
             $user->update($payload);
         }
 
         if (array_key_exists('role_slug', $request->all())) {
             $this->assignUserRole($user, $request->input('role_slug', 'student'));
+            $this->ensureTrainerWallet($user);
         }
 
         if (array_key_exists('program_ids', $request->all())) {
@@ -535,6 +554,7 @@ class RegisterController extends BaseController
 
         $user->refresh();
         $this->loadUserRelations($user);
+        $this->ensureTrainerWallet($user);
 
         return response()->json([
             'success' => true,
@@ -599,6 +619,9 @@ class RegisterController extends BaseController
             'is_active' => $nextActive,
             'status' => $nextActive ? 'active' : 'inactive',
         ]);
+
+        $user->refresh();
+        $this->ensureTrainerWallet($user);
 
         return response()->json([
             'success' => true,
@@ -684,6 +707,7 @@ class RegisterController extends BaseController
         }
 
         $users = $programModel->users->map(function (User $user) {
+            $this->ensureTrainerWallet($user);
             return $this->formatUser($user);
         })->values();
 
@@ -743,6 +767,7 @@ class RegisterController extends BaseController
                     'slug' => $programModel->slug,
                 ],
                 'users' => $programModel->users->map(function (User $user) {
+                    $this->ensureTrainerWallet($user);
                     return $this->formatUser($user);
                 })->values(),
             ],
@@ -826,6 +851,35 @@ class RegisterController extends BaseController
     }
 
     /**
+     * Ensure wallet exists for trainer
+     */
+    private function ensureTrainerWallet(User $user): void
+    {
+        if (!Schema::hasTable('wallets')) {
+            return;
+        }
+
+        $this->loadUserRelations($user);
+
+        $isTrainer = $user->roles->contains(function ($role) {
+            return (string) $role->slug === 'trainer';
+        });
+
+        if (!$isTrainer) {
+            return;
+        }
+
+        Wallet::firstOrCreate(
+            ['user_id' => $user->id],
+            [
+                'balance' => 0,
+                'currency' => 'RWF',
+                'status' => 'active',
+            ]
+        );
+    }
+
+    /**
      * Format user for API response
      */
     private function formatUser(User $user): array
@@ -834,6 +888,21 @@ class RegisterController extends BaseController
 
         $primaryRole = $this->resolvePrimaryRole($user->roles);
 
+        $walletData = null;
+
+        if (Schema::hasTable('wallets')) {
+            $wallet = Wallet::where('user_id', $user->id)->first();
+
+            if ($wallet) {
+                $walletData = [
+                    'id' => $wallet->id,
+                    'balance' => (float) $wallet->balance,
+                    'currency' => $wallet->currency,
+                    'status' => $wallet->status,
+                ];
+            }
+        }
+
         return [
             'id'            => $user->id,
             'name'          => $user->name,
@@ -841,6 +910,9 @@ class RegisterController extends BaseController
             'phone'         => $user->phone,
             'status'        => $user->status,
             'is_active'     => $user->is_active,
+            'daily_rate'    => Schema::hasColumn('users', 'daily_rate')
+                ? (float) $user->daily_rate
+                : 0,
             'last_login_at' => $user->last_login_at,
             'created_at'    => optional($user->created_at)->format('Y-m-d H:i:s'),
             'updated_at'    => optional($user->updated_at)->format('Y-m-d H:i:s'),
@@ -863,6 +935,7 @@ class RegisterController extends BaseController
                     'end_date'   => $program->end_date,
                 ];
             })->values(),
+            'wallet' => $walletData,
         ];
     }
 
