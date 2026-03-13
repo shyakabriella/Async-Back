@@ -11,12 +11,10 @@ class AccountSetupNotification extends Notification
     use Queueable;
 
     protected string $setupUrl;
-    protected ?string $temporaryPassword;
 
-    public function __construct(string $setupUrl, ?string $temporaryPassword = null)
+    public function __construct(string $setupUrl)
     {
         $this->setupUrl = $setupUrl;
-        $this->temporaryPassword = $temporaryPassword;
     }
 
     public function via(object $notifiable): array
@@ -27,12 +25,18 @@ class AccountSetupNotification extends Notification
     public function toMail(object $notifiable): MailMessage
     {
         return (new MailMessage)
-            ->subject('Set Up Your Account')
-            ->view('emails.account-setup', [
+            ->subject('Set Up Your Password')
+            ->view('emails.reset-password-link', [
                 'user' => $notifiable,
-                'setupUrl' => $this->setupUrl,
-                'temporaryPassword' => $this->temporaryPassword,
+                'resetUrl' => $this->setupUrl,
                 'appName' => config('app.name', 'AsyncAfrica'),
             ]);
+    }
+
+    public function toArray(object $notifiable): array
+    {
+        return [
+            'setup_url' => $this->setupUrl,
+        ];
     }
 }
