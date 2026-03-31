@@ -1,799 +1,566 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+<?php
 
-const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000/api";
+namespace App\Http\Controllers\API;
 
-function getAuthToken() {
-  return (
-    localStorage.getItem("token") ||
-    sessionStorage.getItem("token") ||
-    localStorage.getItem("auth_token") ||
-    sessionStorage.getItem("auth_token") ||
-    ""
-  );
-}
+use App\Http\Controllers\Controller;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Validator;
 
-function formatDate(value) {
-  if (!value) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
+class TrainingProgramController extends Controller
+{
+    /**
+     * Display a listing of the resource.
+     */
+    public function index()
+    {
+        $programs = DB::table('training_programs')
+            ->orderByDesc('id')
+            ->get()
+            ->map(function ($program) {
+                return $this->appendRelatedLists($program);
+            })
+            ->values();
 
-  return date.toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "2-digit",
-  });
-}
+        return response()->json([
+            'success' => true,
+            'message' => 'Training programs retrieved successfully.',
+            'data' => $programs,
+        ], 200);
+    }
 
-function normalizeText(value) {
-  return String(value || "").trim();
-}
+    /**
+     * Store a newly created resource in storage.
+     */
+    public function store(Request $request)
+    {
+        $this->normalizeIncomingLists($request);
 
-function getProgramId(application) {
-  return (
-    application?.program?.id ||
-    application?.program_id ||
-    application?.program?.slug ||
-    application?.program?.code ||
-    "unassigned"
-  );
-}
+        $validator = Validator::make($request->all(), [
+            'slug' => 'nullable|string|max:255',
+            'name' => 'required|string|max:255',
+            'badge' => 'nullable|string|max:255',
+            'category' => 'required|string|max:255',
+            'duration' => 'required|string|max:255',
+            'level' => 'nullable|string|max:255',
+            'format' => 'nullable|string|max:255',
+            'status' => 'required|in:Active,Draft,Archived',
+            'instructor' => 'required|string|max:255',
+            'students' => 'nullable|integer|min:0',
+            'start_date' => 'required|date',
+            'end_date' => 'nullable|date|after_or_equal:start_date',
+            'image' => 'nullable|string',
+            'intro' => 'nullable|string',
+            'description' => 'nullable|string',
+            'overview' => 'nullable|string',
+            'icon_key' => 'nullable|string|max:255',
+            'is_active' => 'nullable|boolean',
 
-function getProgramTitle(application) {
-  return (
-    normalizeText(application?.program?.title) ||
-    normalizeText(application?.program?.name) ||
-    normalizeText(application?.program_name) ||
-    "Unassigned Program"
-  );
-}
+            'objectives' => 'nullable|array',
+            'objectives.*' => 'nullable|string',
 
-function getProgramMeta(application) {
-  return (
-    normalizeText(application?.program?.slug) ||
-    normalizeText(application?.program?.code) ||
-    normalizeText(application?.program?.category) ||
-    "No code"
-  );
-}
+            'modules' => 'nullable|array',
+            'modules.*' => 'nullable|string',
 
-function getApplicantName(application) {
-  const first = normalizeText(application?.applicant?.first_name);
-  const last = normalizeText(application?.applicant?.last_name);
-  return `${first} ${last}`.trim() || "-";
-}
+            'skills' => 'nullable|array',
+            'skills.*' => 'nullable|string',
 
-function matchesSearch(application, search) {
-  const q = normalizeText(search).toLowerCase();
-  if (!q) return true;
+            'outcomes' => 'nullable|array',
+            'outcomes.*' => 'nullable|string',
 
-  const haystack = [
-    getApplicantName(application),
-    application?.applicant?.email,
-    application?.applicant?.phone,
-    getProgramTitle(application),
-    getProgramMeta(application),
-    application?.shift?.name,
-    application?.experience_level,
-    application?.status,
-  ]
-    .map((item) => normalizeText(item).toLowerCase())
-    .join(" ");
+            'tools' => 'nullable|array',
+            'tools.*' => 'nullable|string',
+        ]);
 
-  return haystack.includes(q);
-}
-
-function matchesStatus(application, statusFilter) {
-  if (!statusFilter) return true;
-  return normalizeText(application?.status).toLowerCase() ===
-    normalizeText(statusFilter).toLowerCase();
-}
-
-function StatusBadge({ status }) {
-  const current = String(status || "Pending").toLowerCase();
-
-  const styles =
-    current === "accepted"
-      ? "bg-emerald-100 text-emerald-700 border-emerald-200"
-      : current === "rejected"
-      ? "bg-rose-100 text-rose-700 border-rose-200"
-      : current === "reviewed"
-      ? "bg-sky-100 text-sky-700 border-sky-200"
-      : current === "waitlisted"
-      ? "bg-amber-100 text-amber-700 border-amber-200"
-      : "bg-violet-100 text-violet-700 border-violet-200";
-
-  return (
-    <span
-      className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-semibold ${styles}`}
-    >
-      {status || "Pending"}
-    </span>
-  );
-}
-
-function StatCard({ label, value, hint }) {
-  return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-      <p className="text-xs font-medium uppercase tracking-[0.12em] text-slate-500">
-        {label}
-      </p>
-      <h3 className="mt-2 text-2xl font-black leading-none text-slate-900">
-        {value}
-      </h3>
-      {hint ? (
-        <p className="mt-2 text-xs text-slate-500">{hint}</p>
-      ) : null}
-    </div>
-  );
-}
-
-function ProgramSummaryCard({ program, active, onClick }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`w-full rounded-2xl border p-4 text-left shadow-sm transition ${
-        active
-          ? "border-[#6050F0] bg-[#f4f2ff] ring-2 ring-[#6050F0]/10"
-          : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50"
-      }`}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h3 className="truncate text-sm font-black text-slate-900">
-            {program.title}
-          </h3>
-          <p className="mt-1 truncate text-xs text-slate-500">
-            {program.meta}
-          </p>
-        </div>
-
-        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-700">
-          {program.total}
-        </span>
-      </div>
-
-      <div className="mt-4 grid grid-cols-3 gap-2 text-center">
-        <div className="rounded-xl bg-slate-50 px-2 py-2">
-          <p className="text-[10px] uppercase tracking-[0.12em] text-slate-400">
-            Pending
-          </p>
-          <p className="mt-1 text-sm font-black text-slate-900">
-            {program.pending}
-          </p>
-        </div>
-
-        <div className="rounded-xl bg-emerald-50 px-2 py-2">
-          <p className="text-[10px] uppercase tracking-[0.12em] text-emerald-500">
-            Accepted
-          </p>
-          <p className="mt-1 text-sm font-black text-emerald-700">
-            {program.accepted}
-          </p>
-        </div>
-
-        <div className="rounded-xl bg-rose-50 px-2 py-2">
-          <p className="text-[10px] uppercase tracking-[0.12em] text-rose-500">
-            Rejected
-          </p>
-          <p className="mt-1 text-sm font-black text-rose-700">
-            {program.rejected}
-          </p>
-        </div>
-      </div>
-    </button>
-  );
-}
-
-function MobileApplicationCard({
-  application,
-  onView,
-  onDelete,
-  deletingId,
-}) {
-  return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h3 className="truncate text-sm font-bold text-slate-900">
-            {getApplicantName(application)}
-          </h3>
-          <p className="mt-1 truncate text-xs text-slate-500">
-            {application?.applicant?.email || "-"}
-          </p>
-        </div>
-
-        <StatusBadge status={application?.status} />
-      </div>
-
-      <div className="mt-4 grid grid-cols-2 gap-3 text-xs">
-        <div>
-          <p className="text-slate-400">Program</p>
-          <p className="mt-1 font-semibold text-slate-800">
-            {getProgramTitle(application)}
-          </p>
-        </div>
-
-        <div>
-          <p className="text-slate-400">Shift</p>
-          <p className="mt-1 font-semibold text-slate-800">
-            {application?.shift?.name || "-"}
-          </p>
-        </div>
-
-        <div>
-          <p className="text-slate-400">Phone</p>
-          <p className="mt-1 font-semibold text-slate-800">
-            {application?.applicant?.phone || "-"}
-          </p>
-        </div>
-
-        <div>
-          <p className="text-slate-400">Submitted</p>
-          <p className="mt-1 font-semibold text-slate-800">
-            {formatDate(application?.submitted_at)}
-          </p>
-        </div>
-      </div>
-
-      <div className="mt-4 flex gap-2">
-        <button
-          type="button"
-          onClick={onView}
-          className="flex-1 rounded-xl bg-indigo-50 px-3 py-2 text-xs font-bold text-indigo-700 transition hover:bg-indigo-100"
-        >
-          View
-        </button>
-
-        <button
-          type="button"
-          onClick={onDelete}
-          disabled={deletingId === application.id}
-          className="flex-1 rounded-xl bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {deletingId === application.id ? "Deleting..." : "Delete"}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-export default function ApplicationReceived() {
-  const navigate = useNavigate();
-
-  const [applications, setApplications] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [pageLoading, setPageLoading] = useState(false);
-  const [deletingId, setDeletingId] = useState(null);
-  const [error, setError] = useState("");
-  const [successMessage, setSuccessMessage] = useState("");
-  const [searchInput, setSearchInput] = useState("");
-  const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("");
-  const [activeProgramId, setActiveProgramId] = useState("");
-
-  const fetchApplications = useCallback(
-    async ({ silent = false } = {}) => {
-      try {
-        if (silent) {
-          setPageLoading(true);
-        } else {
-          setLoading(true);
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation error.',
+                'errors' => $validator->errors(),
+            ], 422);
         }
 
-        setError("");
-        setSuccessMessage("");
+        $programId = DB::transaction(function () use ($request) {
+            $programData = $this->extractProgramData($request, true);
 
-        const token = getAuthToken();
+            $programId = DB::table('training_programs')->insertGetId($programData);
 
-        const params = new URLSearchParams();
-        if (search.trim()) params.append("search", search.trim());
-        if (statusFilter) params.append("status", statusFilter);
+            $this->syncChildItems('training_program_skills', $programId, $request->input('skills', []));
+            $this->syncChildItems('training_program_outcomes', $programId, $request->input('outcomes', []));
+            $this->syncChildItems('training_program_tools', $programId, $request->input('tools', []));
 
-        const url = `${API_BASE_URL.replace(/\/+$/, "")}/applications${
-          params.toString() ? `?${params.toString()}` : ""
-        }`;
-
-        const response = await fetch(url, {
-          headers: {
-            Accept: "application/json",
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          },
+            return $programId;
         });
 
-        const result = await response.json().catch(() => ({}));
+        $program = $this->findProgram($programId);
 
-        if (!response.ok) {
-          throw new Error(result?.message || "Failed to load applications.");
+        return response()->json([
+            'success' => true,
+            'message' => 'Training program created successfully.',
+            'data' => $program,
+        ], 201);
+    }
+
+    /**
+     * Display the specified resource.
+     */
+    public function show(string $id)
+    {
+        $program = $this->findProgram((int) $id);
+
+        if (!$program) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Training program not found.',
+            ], 404);
         }
 
-        const rows = Array.isArray(result?.data?.data)
-          ? result.data.data
-          : Array.isArray(result?.data)
-          ? result.data
-          : [];
+        return response()->json([
+            'success' => true,
+            'message' => 'Training program retrieved successfully.',
+            'data' => $program,
+        ], 200);
+    }
 
-        setApplications(rows);
-      } catch (err) {
-        setError(err?.message || "Could not load applications.");
-      } finally {
-        setLoading(false);
-        setPageLoading(false);
-      }
-    },
-    [search, statusFilter]
-  );
+    /**
+     * Update the specified resource in storage.
+     */
+    public function update(Request $request, string $id)
+    {
+        $existingProgram = DB::table('training_programs')->where('id', $id)->first();
 
-  useEffect(() => {
-    fetchApplications();
-  }, [fetchApplications]);
+        if (!$existingProgram) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Training program not found.',
+            ], 404);
+        }
 
-  const groupedPrograms = useMemo(() => {
-    const map = new Map();
+        $this->normalizeIncomingLists($request);
 
-    applications.forEach((application) => {
-      const id = String(getProgramId(application));
-      const title = getProgramTitle(application);
-      const meta = getProgramMeta(application);
+        $validator = Validator::make($request->all(), [
+            'slug' => 'nullable|string|max:255',
+            'name' => 'required|string|max:255',
+            'badge' => 'nullable|string|max:255',
+            'category' => 'required|string|max:255',
+            'duration' => 'required|string|max:255',
+            'level' => 'nullable|string|max:255',
+            'format' => 'nullable|string|max:255',
+            'status' => 'required|in:Active,Draft,Archived',
+            'instructor' => 'required|string|max:255',
+            'students' => 'nullable|integer|min:0',
+            'start_date' => 'required|date',
+            'end_date' => 'nullable|date|after_or_equal:start_date',
+            'image' => 'nullable|string',
+            'intro' => 'nullable|string',
+            'description' => 'nullable|string',
+            'overview' => 'nullable|string',
+            'icon_key' => 'nullable|string|max:255',
+            'is_active' => 'nullable|boolean',
 
-      if (!map.has(id)) {
-        map.set(id, {
-          id,
-          title,
-          meta,
-          applications: [],
-          total: 0,
-          pending: 0,
-          accepted: 0,
-          rejected: 0,
+            'objectives' => 'nullable|array',
+            'objectives.*' => 'nullable|string',
+
+            'modules' => 'nullable|array',
+            'modules.*' => 'nullable|string',
+
+            'skills' => 'nullable|array',
+            'skills.*' => 'nullable|string',
+
+            'outcomes' => 'nullable|array',
+            'outcomes.*' => 'nullable|string',
+
+            'tools' => 'nullable|array',
+            'tools.*' => 'nullable|string',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation error.',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        DB::transaction(function () use ($request, $id) {
+            $programData = $this->extractProgramData($request, false);
+
+            DB::table('training_programs')
+                ->where('id', $id)
+                ->update($programData);
+
+            $this->syncChildItems('training_program_skills', (int) $id, $request->input('skills', []));
+            $this->syncChildItems('training_program_outcomes', (int) $id, $request->input('outcomes', []));
+            $this->syncChildItems('training_program_tools', (int) $id, $request->input('tools', []));
         });
-      }
 
-      const group = map.get(id);
-      group.applications.push(application);
-      group.total += 1;
+        $program = $this->findProgram((int) $id);
 
-      const status = normalizeText(application?.status).toLowerCase();
-      if (status === "pending") group.pending += 1;
-      if (status === "accepted") group.accepted += 1;
-      if (status === "rejected") group.rejected += 1;
-    });
-
-    return Array.from(map.values()).sort((a, b) => {
-      if (b.total !== a.total) return b.total - a.total;
-      return a.title.localeCompare(b.title);
-    });
-  }, [applications]);
-
-  useEffect(() => {
-    if (!groupedPrograms.length) {
-      setActiveProgramId("");
-      return;
+        return response()->json([
+            'success' => true,
+            'message' => 'Training program updated successfully.',
+            'data' => $program,
+        ], 200);
     }
 
-    const stillExists = groupedPrograms.some(
-      (program) => String(program.id) === String(activeProgramId)
-    );
+    /**
+     * Remove the specified resource from storage.
+     */
+    public function destroy(string $id)
+    {
+        $program = DB::table('training_programs')->where('id', $id)->first();
 
-    if (!stillExists) {
-      setActiveProgramId(String(groupedPrograms[0].id));
-    }
-  }, [groupedPrograms, activeProgramId]);
-
-  const selectedProgram = useMemo(() => {
-    return (
-      groupedPrograms.find(
-        (program) => String(program.id) === String(activeProgramId)
-      ) || null
-    );
-  }, [groupedPrograms, activeProgramId]);
-
-  const visibleApplications = useMemo(() => {
-    const rows = selectedProgram?.applications || [];
-
-    return rows.filter(
-      (application) =>
-        matchesSearch(application, searchInput) &&
-        matchesStatus(application, statusFilter)
-    );
-  }, [selectedProgram, searchInput, statusFilter]);
-
-  const overallStats = useMemo(() => {
-    const total = applications.length;
-    const pending = applications.filter(
-      (item) => normalizeText(item.status).toLowerCase() === "pending"
-    ).length;
-    const accepted = applications.filter(
-      (item) => normalizeText(item.status).toLowerCase() === "accepted"
-    ).length;
-    const rejected = applications.filter(
-      (item) => normalizeText(item.status).toLowerCase() === "rejected"
-    ).length;
-
-    return {
-      total,
-      pending,
-      accepted,
-      rejected,
-      programs: groupedPrograms.length,
-    };
-  }, [applications, groupedPrograms]);
-
-  async function handleDelete(applicationId) {
-    const confirmed = window.confirm(
-      "Are you sure you want to delete this application?"
-    );
-
-    if (!confirmed) return;
-
-    try {
-      setDeletingId(applicationId);
-      setError("");
-      setSuccessMessage("");
-
-      const token = getAuthToken();
-
-      const response = await fetch(
-        `${API_BASE_URL.replace(/\/+$/, "")}/applications/${applicationId}`,
-        {
-          method: "DELETE",
-          headers: {
-            Accept: "application/json",
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          },
+        if (!$program) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Training program not found.',
+            ], 404);
         }
-      );
 
-      const result = await response.json().catch(() => ({}));
+        DB::transaction(function () use ($id) {
+            if (Schema::hasTable('training_program_skills')) {
+                DB::table('training_program_skills')
+                    ->where($this->getForeignKeyColumn('training_program_skills'), $id)
+                    ->delete();
+            }
 
-      if (!response.ok) {
-        throw new Error(result?.message || "Failed to delete application.");
-      }
+            if (Schema::hasTable('training_program_outcomes')) {
+                DB::table('training_program_outcomes')
+                    ->where($this->getForeignKeyColumn('training_program_outcomes'), $id)
+                    ->delete();
+            }
 
-      setApplications((prev) =>
-        prev.filter((item) => String(item.id) !== String(applicationId))
-      );
-      setSuccessMessage("Application deleted successfully.");
-    } catch (err) {
-      setError(err?.message || "Could not delete application.");
-    } finally {
-      setDeletingId(null);
+            if (Schema::hasTable('training_program_tools')) {
+                DB::table('training_program_tools')
+                    ->where($this->getForeignKeyColumn('training_program_tools'), $id)
+                    ->delete();
+            }
+
+            DB::table('training_programs')->where('id', $id)->delete();
+        });
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Training program deleted successfully.',
+        ], 200);
     }
-  }
 
-  function handleApplyFilters() {
-    setSearch(searchInput);
-  }
+    /**
+     * Normalize incoming list fields so controller accepts:
+     * - arrays
+     * - JSON strings
+     * - newline separated text
+     */
+    private function normalizeIncomingLists(Request $request): void
+    {
+        $request->merge([
+            'objectives' => $this->normalizeList($request->input('objectives')),
+            'modules' => $this->normalizeList($request->input('modules')),
+            'skills' => $this->normalizeList($request->input('skills')),
+            'outcomes' => $this->normalizeList($request->input('outcomes')),
+            'tools' => $this->normalizeList($request->input('tools')),
+        ]);
+    }
 
-  function handleResetFilters() {
-    setSearchInput("");
-    setSearch("");
-    setStatusFilter("");
-  }
+    /**
+     * Build insert/update data for training_programs table.
+     */
+    private function extractProgramData(Request $request, bool $isCreate): array
+    {
+        $data = [];
 
-  return (
-    <div className="min-h-screen bg-[#f8fafc]">
-      <div className="mx-auto max-w-7xl px-4 py-5 sm:px-6 lg:px-8">
-        <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-          <div>
-            <p className="text-xs uppercase tracking-[0.22em] text-[#6050F0]">
-              Training Management
-            </p>
-            <h1 className="mt-2 text-2xl font-black text-slate-900 sm:text-3xl">
-              Applications by Program
-            </h1>
-            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-500">
-              Programs are separated now. Click any program to see only the
-              applicants enrolled in that program.
-            </p>
-          </div>
+        $possibleFields = [
+            'slug',
+            'name',
+            'badge',
+            'category',
+            'duration',
+            'level',
+            'format',
+            'status',
+            'instructor',
+            'students',
+            'start_date',
+            'end_date',
+            'image',
+            'intro',
+            'description',
+            'overview',
+            'icon_key',
+            'is_active',
+            'objectives',
+            'modules',
+        ];
 
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => fetchApplications({ silent: true })}
-              className="rounded-full border border-slate-200 bg-white px-4 py-2.5 text-xs font-bold text-slate-700 transition hover:bg-slate-50 sm:text-sm"
-            >
-              {pageLoading ? "Refreshing..." : "Refresh"}
-            </button>
-          </div>
-        </div>
+        foreach ($possibleFields as $field) {
+            if (Schema::hasColumn('training_programs', $field)) {
+                if ($field === 'students') {
+                    $data[$field] = $request->input($field, 0);
+                } elseif ($field === 'is_active') {
+                    $data[$field] = $request->has($field)
+                        ? $request->boolean($field)
+                        : true;
+                } else {
+                    $data[$field] = $request->input($field);
+                }
+            }
+        }
 
-        <div className="mb-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-          <StatCard
-            label="Total Applications"
-            value={overallStats.total}
-            hint="All submitted applications"
-          />
-          <StatCard
-            label="Programs"
-            value={overallStats.programs}
-            hint="Programs with applicants"
-          />
-          <StatCard
-            label="Pending"
-            value={overallStats.pending}
-            hint="Awaiting review"
-          />
-          <StatCard
-            label="Accepted"
-            value={overallStats.accepted}
-            hint="Approved applicants"
-          />
-          <StatCard
-            label="Selected Program"
-            value={selectedProgram?.total || 0}
-            hint={selectedProgram?.title || "No program selected"}
-          />
-        </div>
+        if (Schema::hasColumn('training_programs', 'code')) {
+            if ($isCreate) {
+                $data['code'] = $request->input('code') ?: $this->generateProgramCode($request->input('name'));
+            }
+        }
 
-        <div className="mb-5 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="grid gap-3 md:grid-cols-3">
-            <div className="md:col-span-2">
-              <label className="mb-1.5 block text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
-                Search applicant in selected program
-              </label>
-              <input
-                type="text"
-                value={searchInput}
-                onChange={(e) => setSearchInput(e.target.value)}
-                placeholder="Search by name, email, phone..."
-                className="h-11 w-full rounded-xl border border-slate-200 bg-white px-4 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-[#7A6CF5]"
-              />
-            </div>
+        $now = now();
 
-            <div>
-              <label className="mb-1.5 block text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
-                Status
-              </label>
-              <select
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value)}
-                className="h-11 w-full appearance-none rounded-xl border border-slate-200 bg-white px-4 text-sm text-slate-900 outline-none transition focus:border-[#7A6CF5]"
-              >
-                <option value="">All status</option>
-                <option value="Pending">Pending</option>
-                <option value="Reviewed">Reviewed</option>
-                <option value="Accepted">Accepted</option>
-                <option value="Rejected">Rejected</option>
-                <option value="Waitlisted">Waitlisted</option>
-              </select>
-            </div>
-          </div>
+        if (Schema::hasColumn('training_programs', 'created_at') && $isCreate) {
+            $data['created_at'] = $now;
+        }
 
-          <div className="mt-3 flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={handleApplyFilters}
-              className="rounded-full bg-[#6050F0] px-5 py-2.5 text-xs font-bold text-white transition hover:bg-[#7A6CF5] sm:text-sm"
-            >
-              Filter
-            </button>
+        if (Schema::hasColumn('training_programs', 'updated_at')) {
+            $data['updated_at'] = $now;
+        }
 
-            <button
-              type="button"
-              onClick={handleResetFilters}
-              className="rounded-full border border-slate-200 bg-white px-5 py-2.5 text-xs font-bold text-slate-700 transition hover:bg-slate-50 sm:text-sm"
-            >
-              Reset
-            </button>
-          </div>
-        </div>
+        return $data;
+    }
 
-        {successMessage ? (
-          <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-            {successMessage}
-          </div>
-        ) : null}
+    /**
+     * Append skills/outcomes/tools arrays to a program object.
+     */
+    private function appendRelatedLists(object $program): array
+    {
+        $programArray = (array) $program;
 
-        {error ? (
-          <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-            {error}
-          </div>
-        ) : null}
+        $programId = (int) $programArray['id'];
 
-        {loading ? (
-          <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-500 shadow-sm">
-            Loading applications...
-          </div>
-        ) : groupedPrograms.length === 0 ? (
-          <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-500 shadow-sm">
-            No applications found.
-          </div>
-        ) : (
-          <div className="grid gap-5 xl:grid-cols-[320px_minmax(0,1fr)]">
-            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-              <div className="mb-4 flex items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-base font-black text-slate-900">
-                    Programs
-                  </h2>
-                  <p className="mt-1 text-xs text-slate-500">
-                    Click a program to see its applicants
-                  </p>
-                </div>
+        $programArray['skills'] = $this->fetchChildItems('training_program_skills', $programId);
+        $programArray['outcomes'] = $this->fetchChildItems('training_program_outcomes', $programId);
+        $programArray['tools'] = $this->fetchChildItems('training_program_tools', $programId);
 
-                <span className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-bold text-slate-600">
-                  {groupedPrograms.length}
-                </span>
-              </div>
+        return $programArray;
+    }
 
-              <div className="space-y-3">
-                {groupedPrograms.map((program) => (
-                  <ProgramSummaryCard
-                    key={program.id}
-                    program={program}
-                    active={String(program.id) === String(activeProgramId)}
-                    onClick={() => setActiveProgramId(String(program.id))}
-                  />
-                ))}
-              </div>
-            </div>
+    /**
+     * Find one program with related lists.
+     */
+    private function findProgram(int $id): ?array
+    {
+        $program = DB::table('training_programs')->where('id', $id)->first();
 
-            <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-              <div className="flex flex-col gap-2 border-b border-slate-200 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
-                <div>
-                  <h2 className="text-base font-black text-slate-900 sm:text-lg">
-                    {selectedProgram?.title || "Program Applicants"}
-                  </h2>
-                  <p className="mt-1 text-xs text-slate-500 sm:text-sm">
-                    {selectedProgram?.meta || "Selected program"} •{" "}
-                    {visibleApplications.length} applicant(s) shown
-                  </p>
-                </div>
+        if (!$program) {
+            return null;
+        }
 
-                <span className="inline-flex w-fit rounded-full bg-slate-100 px-3 py-1 text-[11px] font-bold text-slate-600">
-                  {selectedProgram?.total || 0} total in program
-                </span>
-              </div>
+        return $this->appendRelatedLists($program);
+    }
 
-              {visibleApplications.length === 0 ? (
-                <div className="p-8 text-center text-sm text-slate-500">
-                  No applicants found for this program with the current filter.
-                </div>
-              ) : (
-                <>
-                  <div className="grid gap-3 p-4 md:hidden">
-                    {visibleApplications.map((application) => (
-                      <MobileApplicationCard
-                        key={application.id}
-                        application={application}
-                        deletingId={deletingId}
-                        onView={() =>
-                          navigate(`/dashboard/applications/${application.id}`)
-                        }
-                        onDelete={() => handleDelete(application.id)}
-                      />
-                    ))}
-                  </div>
+    /**
+     * Save child list table items by replacing old values.
+     */
+    private function syncChildItems(string $table, int $programId, array $items): void
+    {
+        if (!Schema::hasTable($table)) {
+            return;
+        }
 
-                  <div className="hidden overflow-x-auto md:block">
-                    <table className="w-full min-w-[980px]">
-                      <thead className="border-b border-slate-200 bg-slate-50">
-                        <tr>
-                          <th className="px-3 py-3 text-left text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
-                            Applicant
-                          </th>
-                          <th className="px-3 py-3 text-left text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
-                            Program
-                          </th>
-                          <th className="px-3 py-3 text-left text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
-                            Email
-                          </th>
-                          <th className="px-3 py-3 text-left text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
-                            Shift
-                          </th>
-                          <th className="px-3 py-3 text-left text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
-                            Experience
-                          </th>
-                          <th className="px-3 py-3 text-left text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
-                            Status
-                          </th>
-                          <th className="px-3 py-3 text-left text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
-                            Submitted
-                          </th>
-                          <th className="px-3 py-3 text-right text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
-                            Actions
-                          </th>
-                        </tr>
-                      </thead>
+        $foreignKey = $this->getForeignKeyColumn($table);
+        $valueColumn = $this->getValueColumn($table);
 
-                      <tbody>
-                        {visibleApplications.map((application) => (
-                          <tr
-                            key={application.id}
-                            onClick={() =>
-                              navigate(`/dashboard/applications/${application.id}`)
-                            }
-                            className="cursor-pointer border-b border-slate-100 transition hover:bg-slate-50"
-                          >
-                            <td className="px-3 py-3">
-                              <div className="max-w-[180px] truncate text-sm font-bold text-slate-900">
-                                {getApplicantName(application)}
-                              </div>
-                              <div className="mt-1 max-w-[180px] truncate text-xs text-slate-500">
-                                {application?.applicant?.phone || "-"}
-                              </div>
-                            </td>
+        if (!$foreignKey || !$valueColumn) {
+            return;
+        }
 
-                            <td className="px-3 py-3">
-                              <div className="max-w-[170px] truncate text-sm font-semibold text-slate-800">
-                                {getProgramTitle(application)}
-                              </div>
-                              <div className="mt-1 max-w-[170px] truncate text-xs text-slate-500">
-                                {getProgramMeta(application)}
-                              </div>
-                            </td>
+        DB::table($table)->where($foreignKey, $programId)->delete();
 
-                            <td className="px-3 py-3 text-sm text-slate-700">
-                              <div className="max-w-[190px] truncate">
-                                {application?.applicant?.email || "-"}
-                              </div>
-                            </td>
+        $rows = [];
+        $now = now();
 
-                            <td className="px-3 py-3 text-sm text-slate-700">
-                              <div className="max-w-[130px] truncate">
-                                {application?.shift?.name || "-"}
-                              </div>
-                            </td>
+        foreach ($items as $item) {
+            $value = trim((string) $item);
 
-                            <td className="px-3 py-3 text-sm text-slate-700">
-                              <div className="max-w-[130px] truncate">
-                                {application?.experience_level || "-"}
-                              </div>
-                            </td>
+            if ($value === '') {
+                continue;
+            }
 
-                            <td className="px-3 py-3">
-                              <StatusBadge status={application?.status} />
-                            </td>
+            $row = [
+                $foreignKey => $programId,
+                $valueColumn => $value,
+            ];
 
-                            <td className="px-3 py-3 text-sm text-slate-700">
-                              {formatDate(application?.submitted_at)}
-                            </td>
+            if (Schema::hasColumn($table, 'created_at')) {
+                $row['created_at'] = $now;
+            }
 
-                            <td className="px-3 py-3">
-                              <div className="flex justify-end gap-2">
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    navigate(
-                                      `/dashboard/applications/${application.id}`
-                                    );
-                                  }}
-                                  className="rounded-lg bg-indigo-50 px-3 py-2 text-[11px] font-bold text-indigo-700 transition hover:bg-indigo-100"
-                                >
-                                  View
-                                </button>
+            if (Schema::hasColumn($table, 'updated_at')) {
+                $row['updated_at'] = $now;
+            }
 
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleDelete(application.id);
-                                  }}
-                                  disabled={deletingId === application.id}
-                                  className="rounded-lg bg-rose-50 px-3 py-2 text-[11px] font-bold text-rose-700 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
-                                >
-                                  {deletingId === application.id
-                                    ? "Deleting..."
-                                    : "Delete"}
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
+            $rows[] = $row;
+        }
+
+        if (!empty($rows)) {
+            DB::table($table)->insert($rows);
+        }
+    }
+
+    /**
+     * Fetch child items as simple string array.
+     */
+    private function fetchChildItems(string $table, int $programId): array
+    {
+        if (!Schema::hasTable($table)) {
+            return [];
+        }
+
+        $foreignKey = $this->getForeignKeyColumn($table);
+        $valueColumn = $this->getValueColumn($table);
+
+        if (!$foreignKey || !$valueColumn) {
+            return [];
+        }
+
+        return DB::table($table)
+            ->where($foreignKey, $programId)
+            ->pluck($valueColumn)
+            ->filter()
+            ->values()
+            ->toArray();
+    }
+
+    /**
+     * Detect foreign key column in child tables.
+     */
+    private function getForeignKeyColumn(string $table): ?string
+    {
+        $candidates = ['training_program_id', 'program_id'];
+
+        foreach ($candidates as $candidate) {
+            if (Schema::hasColumn($table, $candidate)) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Detect value column in child tables.
+     */
+    private function getValueColumn(string $table): ?string
+    {
+        $candidates = match ($table) {
+            'training_program_skills' => ['skill', 'name', 'title', 'value'],
+            'training_program_outcomes' => ['outcome', 'name', 'title', 'value'],
+            'training_program_tools' => ['tool', 'name', 'title', 'value'],
+            default => ['name', 'title', 'value'],
+        };
+
+        foreach ($candidates as $candidate) {
+            if (Schema::hasColumn($table, $candidate)) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Normalize list input from array / JSON / newline text.
+     */
+    private function normalizeList($value): array
+    {
+        if (is_array($value)) {
+            return array_values(array_filter(array_map(function ($item) {
+                return trim((string) $item);
+            }, $value), function ($item) {
+                return $item !== '';
+            }));
+        }
+
+        if (is_string($value)) {
+            $trimmed = trim($value);
+
+            if ($trimmed === '') {
+                return [];
+            }
+
+            $decoded = json_decode($trimmed, true);
+            if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+                return array_values(array_filter(array_map(function ($item) {
+                    return trim((string) $item);
+                }, $decoded), function ($item) {
+                    return $item !== '';
+                }));
+            }
+
+            return array_values(array_filter(array_map(function ($item) {
+                return trim($item);
+            }, preg_split('/\r\n|\r|\n/', $trimmed)), function ($item) {
+                return $item !== '';
+            }));
+        }
+
+        return [];
+    }
+
+    /**
+     * Generate code automatically if training_programs has a code column.
+     * Example: Software Development => SD-2026-001
+     */
+    private function generateProgramCode(string $programName): string
+    {
+        $prefix = $this->makeProgramPrefix($programName);
+        $year = now()->format('Y');
+        $base = $prefix . '-' . $year . '-';
+
+        $latestCode = DB::table('training_programs')
+            ->where('code', 'like', $base . '%')
+            ->orderByDesc('id')
+            ->value('code');
+
+        $nextNumber = 1;
+
+        if ($latestCode) {
+            $parts = explode('-', $latestCode);
+            $lastNumber = (int) end($parts);
+            $nextNumber = $lastNumber + 1;
+        }
+
+        do {
+            $code = $base . str_pad($nextNumber, 3, '0', STR_PAD_LEFT);
+            $nextNumber++;
+        } while (
+            DB::table('training_programs')->where('code', $code)->exists()
+        );
+
+        return $code;
+    }
+
+    /**
+     * Create abbreviation from program name.
+     * Software Development => SD
+     * Artificial Intelligence => AI
+     * Accounting => ACC
+     */
+    private function makeProgramPrefix(string $programName): string
+    {
+        $cleanName = strtoupper(trim(preg_replace('/[^A-Za-z0-9\s]/', ' ', $programName)));
+        $words = array_values(array_filter(preg_split('/\s+/', $cleanName)));
+
+        if (count($words) >= 2) {
+            $prefix = '';
+            foreach ($words as $word) {
+                $prefix .= substr($word, 0, 1);
+            }
+            return substr($prefix, 0, 10);
+        }
+
+        if (count($words) === 1) {
+            return substr($words[0], 0, 3);
+        }
+
+        return 'TP';
+    }
 }
