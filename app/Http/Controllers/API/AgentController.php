@@ -447,7 +447,6 @@ class AgentController extends BaseController
                 'program_id' => 'required|integer|exists:programs,id',
                 'status' => ['nullable', Rule::in(['active', 'inactive', 'suspended'])],
                 'is_active' => 'nullable|boolean',
-                'amount_paid' => 'nullable|numeric|min:0',
                 'commission_percentage' => 'nullable|numeric|min:0|max:100',
                 'notes' => 'nullable|string|max:5000',
             ],
@@ -475,11 +474,7 @@ class AgentController extends BaseController
         $commissionPercentage = (float) $request->input('commission_percentage', $agentCommission);
         $commissionPercentage = max(0, min(100, $commissionPercentage));
 
-        $amountPaid = $request->filled('amount_paid')
-            ? (float) $request->input('amount_paid')
-            : $programPrice;
-
-        $amountPaid = max(0, $amountPaid);
+        $amountPaid = max(0, $programPrice);
         $commissionAmount = $this->calculateCommissionAmount($amountPaid, $commissionPercentage);
 
         DB::beginTransaction();
