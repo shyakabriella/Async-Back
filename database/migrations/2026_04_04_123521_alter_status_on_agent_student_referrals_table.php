@@ -8,6 +8,18 @@ return new class extends Migration
     public function up(): void
     {
         DB::statement("
+            ALTER TABLE agent_student_referrals
+            MODIFY COLUMN status ENUM(
+                'pending',
+                'approved',
+                'rejected',
+                'not_paid',
+                'paid',
+                'quit'
+            ) NOT NULL DEFAULT 'pending'
+        ");
+
+        DB::statement("
             UPDATE agent_student_referrals
             SET status = CASE
                 WHEN status = 'pending' THEN 'not_paid'
@@ -19,13 +31,28 @@ return new class extends Migration
 
         DB::statement("
             ALTER TABLE agent_student_referrals
-            MODIFY COLUMN status ENUM('not_paid', 'paid', 'quit')
-            NOT NULL DEFAULT 'not_paid'
+            MODIFY COLUMN status ENUM(
+                'not_paid',
+                'paid',
+                'quit'
+            ) NOT NULL DEFAULT 'not_paid'
         ");
     }
 
     public function down(): void
     {
+        DB::statement("
+            ALTER TABLE agent_student_referrals
+            MODIFY COLUMN status ENUM(
+                'pending',
+                'approved',
+                'rejected',
+                'not_paid',
+                'paid',
+                'quit'
+            ) NOT NULL DEFAULT 'not_paid'
+        ");
+
         DB::statement("
             UPDATE agent_student_referrals
             SET status = CASE
@@ -38,8 +65,11 @@ return new class extends Migration
 
         DB::statement("
             ALTER TABLE agent_student_referrals
-            MODIFY COLUMN status ENUM('pending', 'approved', 'rejected')
-            NOT NULL DEFAULT 'pending'
+            MODIFY COLUMN status ENUM(
+                'pending',
+                'approved',
+                'rejected'
+            ) NOT NULL DEFAULT 'pending'
         ");
     }
 };
