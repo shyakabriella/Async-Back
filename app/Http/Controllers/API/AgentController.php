@@ -23,7 +23,7 @@ use Illuminate\Validation\Rule;
 
 class AgentController extends BaseController
 {
-        /**
+    /**
      * Admin / CEO: list all agents
      */
     public function index(Request $request): JsonResponse
@@ -48,12 +48,20 @@ class AgentController extends BaseController
             ->get()
             ->map(function (User $agent) {
                 $totals = $this->syncAgentFinancials($agent);
-                $formatted = $this->formatAgent($agent->fresh(['roles:id,name,slug', 'agentProfile:id,user_id,image,commission_percentage,created_by']));
+                $formatted = $this->formatAgent(
+                    $agent->fresh([
+                        'roles:id,name,slug',
+                        'agentProfile:id,user_id,image,commission_percentage,created_by',
+                    ])
+                );
 
                 $formatted['stats'] = [
                     'total_students' => $totals['total_students'],
+                    'approved_students' => $totals['approved_students'],
+                    'pending_students' => $totals['pending_students'],
                     'total_amount_paid' => $totals['total_amount_paid'],
                     'total_commission' => $totals['total_commission'],
+                    'expected_commission' => $totals['expected_commission'],
                 ];
 
                 return $formatted;
@@ -66,6 +74,7 @@ class AgentController extends BaseController
             'data' => $agents,
         ], 200);
     }
+
     /**
      * Admin / CEO: create agent
      */
@@ -150,7 +159,10 @@ class AgentController extends BaseController
 
             DB::commit();
 
-            $user->load(['roles:id,name,slug', 'agentProfile:id,user_id,image,commission_percentage,created_by']);
+            $user->load([
+                'roles:id,name,slug',
+                'agentProfile:id,user_id,image,commission_percentage,created_by',
+            ]);
 
             return response()->json([
                 'success' => true,
@@ -199,28 +211,33 @@ class AgentController extends BaseController
         if (!$this->hasRole($agent, 'agent')) {
             return response()->json([
                 'success' => false,
-                'message' => 'This user is not an agent.',
+                'message' => 'The selected user is not an agent.',
             ], 422);
         }
 
-        if (!$this->isAdminish($authUser) && (int) $authUser->id !== (int) $agent->id) {
+        $isSelf = $authUser && (int) $authUser->id === (int) $agent->id;
+
+        if (!$isSelf && !$this->isAdminish($authUser)) {
             return response()->json([
                 'success' => false,
                 'message' => 'You are not allowed to view this agent.',
             ], 403);
         }
 
-        $this->ensureAgentWallet($agent);
+        $totals = $this->syncAgentFinancials($agent);
 
         return response()->json([
             'success' => true,
             'message' => 'Agent retrieved successfully.',
-            'data' => $this->formatAgent($agent),
+            'data' => [
+                'agent' => $this->formatAgent($agent),
+                'stats' => $totals,
+            ],
         ], 200);
     }
 
     /**
-     * Admin / CEO: update agent
+     * Admin / CEO: update one agent
      */
     public function update(Request $request, string $id): JsonResponse
     {
@@ -233,7 +250,10 @@ class AgentController extends BaseController
             ], 403);
         }
 
-        $agent = User::with(['roles:id,name,slug', 'agentProfile'])->find($id);
+        $agent = User::with([
+            'roles:id,name,slug',
+            'agentProfile:id,user_id,image,commission_percentage,created_by',
+        ])->find($id);
 
         if (!$agent) {
             return response()->json([
@@ -245,7 +265,7 @@ class AgentController extends BaseController
         if (!$this->hasRole($agent, 'agent')) {
             return response()->json([
                 'success' => false,
-                'message' => 'This user is not an agent.',
+                'message' => 'The selected user is not an agent.',
             ], 422);
         }
 
@@ -281,55 +301,58 @@ class AgentController extends BaseController
         DB::beginTransaction();
 
         try {
-            $payload = [];
-
             if ($request->filled('name')) {
-                $payload['name'] = trim((string) $request->name);
+                $agent->name = trim((string) $request->name);
             }
 
             if ($request->filled('email')) {
-                $payload['email'] = trim((string) $request->email);
+                $agent->email = trim((string) $request->email);
             }
 
             if ($request->filled('phone')) {
-                $payload['phone'] = trim((string) $request->phone);
+                $agent->phone = trim((string) $request->phone);
             }
 
-            if (array_key_exists('status', $request->all())) {
-                $payload['status'] = $request->status;
+            if ($request->filled('status')) {
+                $agent->status = $request->input('status');
             }
 
-            if (array_key_exists('is_active', $request->all())) {
-                $payload['is_active'] = (bool) $request->boolean('is_active');
-            } elseif (array_key_exists('status', $request->all())) {
-                $payload['is_active'] = $request->status === 'active';
+            if ($request->has('is_active')) {
+                $agent->is_active = (bool) $request->boolean('is_active');
+            } elseif ($request->filled('status')) {
+                $agent->is_active = $request->input('status') === 'active';
             }
 
-            if (!empty($payload)) {
-                $agent->update($payload);
-            }
+            $agent->save();
 
-            $profilePayload = [];
+            $profilePayload = [
+                'commission_percentage' => (float) $request->input(
+                    'commission_percentage',
+                    optional($agent->agentProfile)->commission_percentage ?? 0
+                ),
+                'created_by' => optional($agent->agentProfile)->created_by ?? $authUser?->id,
+            ];
 
             if ($request->hasFile('image')) {
                 $profilePayload['image'] = $request->file('image')->store('agents', 'public');
+            } elseif ($agent->agentProfile && $agent->agentProfile->image) {
+                $profilePayload['image'] = $agent->agentProfile->image;
             }
 
-            if (array_key_exists('commission_percentage', $request->all())) {
-                $profilePayload['commission_percentage'] = (float) $request->input('commission_percentage', 0);
-            }
+            AgentProfile::updateOrCreate(
+                ['user_id' => $agent->id],
+                $profilePayload
+            );
 
-            if (!empty($profilePayload)) {
-                AgentProfile::updateOrCreate(
-                    ['user_id' => $agent->id],
-                    $profilePayload
-                );
-            }
+            $this->ensureAgentWallet($agent);
+            $this->syncAgentFinancials($agent);
 
             DB::commit();
 
-            $agent->refresh()->load(['roles:id,name,slug', 'agentProfile']);
-            $this->ensureAgentWallet($agent);
+            $agent->refresh()->load([
+                'roles:id,name,slug',
+                'agentProfile:id,user_id,image,commission_percentage,created_by',
+            ]);
 
             return response()->json([
                 'success' => true,
@@ -352,7 +375,7 @@ class AgentController extends BaseController
         }
     }
 
-        /**
+    /**
      * Agent: dashboard (only own data)
      */
     public function myDashboard(Request $request): JsonResponse
@@ -372,7 +395,6 @@ class AgentController extends BaseController
         ]);
 
         $totals = $this->syncAgentFinancials($agent);
-
         $wallet = Wallet::where('user_id', $agent->id)->first();
 
         $referrals = AgentStudentReferral::with([
@@ -424,7 +446,8 @@ class AgentController extends BaseController
             'data' => $data,
         ], 200);
     }
-        /**
+
+    /**
      * Agent: register student under himself
      */
     public function registerStudent(Request $request): JsonResponse
@@ -445,8 +468,7 @@ class AgentController extends BaseController
                 'email' => 'nullable|email|max:255|unique:users,email|required_without:phone',
                 'phone' => 'nullable|string|max:20|unique:users,phone|required_without:email',
                 'program_id' => 'required|integer|exists:programs,id',
-                'status' => ['nullable', Rule::in(['active', 'inactive', 'suspended'])],
-                'is_active' => 'nullable|boolean',
+                'status' => ['nullable', Rule::in(['pending', 'approved', 'paid', 'rejected'])],
                 'commission_percentage' => 'nullable|numeric|min:0|max:100',
                 'notes' => 'nullable|string|max:5000',
             ],
@@ -465,17 +487,19 @@ class AgentController extends BaseController
         $program = Program::find((int) $request->input('program_id'));
         $programPrice = $this->resolveProgramPrice($program);
 
-        $status = $request->input('status', 'active');
-        $isActive = $request->has('is_active')
-            ? (bool) $request->boolean('is_active')
-            : $status === 'active';
-
         $agentCommission = (float) optional($agent->agentProfile)->commission_percentage;
         $commissionPercentage = (float) $request->input('commission_percentage', $agentCommission);
         $commissionPercentage = max(0, min(100, $commissionPercentage));
 
         $amountPaid = max(0, $programPrice);
         $commissionAmount = $this->calculateCommissionAmount($amountPaid, $commissionPercentage);
+
+        // student account remains active
+        $studentAccountStatus = 'active';
+        $studentIsActive = true;
+
+        // referral must remain pending until approval
+        $referralStatus = 'pending';
 
         DB::beginTransaction();
 
@@ -485,8 +509,8 @@ class AgentController extends BaseController
                 'email' => $request->email ? trim((string) $request->email) : null,
                 'phone' => $request->phone ? trim((string) $request->phone) : null,
                 'password' => Hash::make(Str::random(32)),
-                'status' => $status,
-                'is_active' => $isActive,
+                'status' => $studentAccountStatus,
+                'is_active' => $studentIsActive,
                 'last_login_at' => null,
             ]);
 
@@ -504,7 +528,7 @@ class AgentController extends BaseController
                 'commission_percentage' => $commissionPercentage,
                 'commission_amount' => $commissionAmount,
                 'currency' => 'RWF',
-                'status' => $amountPaid > 0 ? 'approved' : 'pending',
+                'status' => $referralStatus,
                 'notes' => $request->input('notes'),
                 'registered_at' => now(),
             ]);
@@ -516,7 +540,7 @@ class AgentController extends BaseController
                 try {
                     $emailSetupSent = $this->sendAccountSetupEmail($student);
                     $emailSetupMessage = $emailSetupSent
-                        ? 'Student created and setup email sent successfully.'
+                        ? 'Student created successfully and account setup email sent.'
                         : 'Student created, but setup email could not be sent.';
                 } catch (\Throwable $e) {
                     Log::error('Failed to send student account setup email.', [
@@ -587,6 +611,7 @@ class AgentController extends BaseController
             ], 500);
         }
     }
+
     /**
      * Helpers
      */
@@ -641,7 +666,7 @@ class AgentController extends BaseController
         );
     }
 
-        private function programRelationSelect(): string
+    private function programRelationSelect(): string
     {
         $columns = ['id', 'name', 'slug'];
 
@@ -671,6 +696,20 @@ class AgentController extends BaseController
         return round(($amountPaid * $commissionPercentage) / 100, 2);
     }
 
+    private function isApprovedReferralStatus(?string $status): bool
+    {
+        return in_array(
+            strtolower(trim((string) $status)),
+            ['approved', 'paid'],
+            true
+        );
+    }
+
+    private function isPendingReferralStatus(?string $status): bool
+    {
+        return strtolower(trim((string) $status)) === 'pending';
+    }
+
     private function syncAgentFinancials(User $agent): array
     {
         $agent->loadMissing('agentProfile:id,user_id,commission_percentage');
@@ -687,8 +726,11 @@ class AgentController extends BaseController
             ->get();
 
         $totalStudents = $referrals->count();
+        $approvedStudents = 0;
+        $pendingStudents = 0;
         $totalAmountPaid = 0;
         $totalCommission = 0;
+        $expectedCommission = 0;
 
         foreach ($referrals as $referral) {
             $programPrice = $this->resolveProgramPrice($referral->program);
@@ -699,10 +741,13 @@ class AgentController extends BaseController
             $amountPaid = round(max(0, $amountPaid), 2);
             $commissionAmount = $this->calculateCommissionAmount($amountPaid, $commissionPercentage);
 
-            $currentStatus = strtolower((string) $referral->status);
-            $status = $amountPaid > 0
-                ? ($currentStatus === 'paid' ? 'paid' : 'approved')
-                : (in_array($currentStatus, ['rejected', 'inactive', 'suspended'], true) ? $referral->status : 'pending');
+            $currentStatus = strtolower(trim((string) $referral->status));
+
+            if (in_array($currentStatus, ['approved', 'paid', 'pending', 'rejected'], true)) {
+                $status = $currentStatus;
+            } else {
+                $status = 'pending';
+            }
 
             $dirty = false;
 
@@ -731,17 +776,18 @@ class AgentController extends BaseController
                 $dirty = true;
             }
 
-            if (!$referral->registered_at) {
-                $referral->registered_at = $referral->created_at ?: now();
-                $dirty = true;
-            }
-
             if ($dirty) {
                 $referral->save();
             }
 
-            $totalAmountPaid += (float) $referral->amount_paid;
-            $totalCommission += (float) $referral->commission_amount;
+            if ($this->isApprovedReferralStatus($status)) {
+                $approvedStudents++;
+                $totalAmountPaid += (float) $referral->amount_paid;
+                $totalCommission += (float) $referral->commission_amount;
+            } elseif ($this->isPendingReferralStatus($status)) {
+                $pendingStudents++;
+                $expectedCommission += (float) $referral->commission_amount;
+            }
         }
 
         $wallet = Wallet::firstOrCreate(
@@ -760,12 +806,15 @@ class AgentController extends BaseController
 
         return [
             'total_students' => $totalStudents,
+            'approved_students' => $approvedStudents,
+            'pending_students' => $pendingStudents,
             'total_amount_paid' => round($totalAmountPaid, 2),
             'total_commission' => round($totalCommission, 2),
+            'expected_commission' => round($expectedCommission, 2),
         ];
     }
 
-private function sendAccountSetupEmail(User $user): bool
+    private function sendAccountSetupEmail(User $user): bool
     {
         if (empty($user->email)) {
             return false;
