@@ -58,7 +58,9 @@ class AgentController extends BaseController
                 $formatted['stats'] = [
                     'total_students' => $totals['total_students'],
                     'approved_students' => $totals['approved_students'],
+                    'paid_students' => $totals['paid_students'] ?? $totals['approved_students'],
                     'pending_students' => $totals['pending_students'],
+                    'not_paid_students' => $totals['not_paid_students'] ?? $totals['pending_students'],
                     'total_amount_paid' => $totals['total_amount_paid'],
                     'total_commission' => $totals['total_commission'],
                     'expected_commission' => $totals['expected_commission'],
@@ -418,14 +420,17 @@ class AgentController extends BaseController
         DB::beginTransaction();
 
         try {
+            $expectedAmountPaid = round(max($programPrice, (float) $referral->amount_paid), 2);
+            $expectedCommissionAmount = $this->calculateCommissionAmount(
+                $expectedAmountPaid,
+                $commissionPercentage
+            );
+
             if ($action === 'paid') {
                 $referral->status = 'paid';
-                $referral->amount_paid = round(max($programPrice, (float) $referral->amount_paid), 2);
+                $referral->amount_paid = $expectedAmountPaid;
                 $referral->commission_percentage = $commissionPercentage;
-                $referral->commission_amount = $this->calculateCommissionAmount(
-                    (float) $referral->amount_paid,
-                    $commissionPercentage
-                );
+                $referral->commission_amount = $expectedCommissionAmount;
                 $referral->currency = 'RWF';
 
                 if ($referral->student) {
@@ -435,12 +440,9 @@ class AgentController extends BaseController
                 }
             } elseif ($action === 'not_paid') {
                 $referral->status = 'not_paid';
-                $referral->amount_paid = round(max($programPrice, (float) $referral->amount_paid), 2);
+                $referral->amount_paid = 0;
                 $referral->commission_percentage = $commissionPercentage;
-                $referral->commission_amount = $this->calculateCommissionAmount(
-                    (float) $referral->amount_paid,
-                    $commissionPercentage
-                );
+                $referral->commission_amount = $expectedCommissionAmount;
                 $referral->currency = 'RWF';
 
                 if ($referral->student) {
@@ -456,7 +458,6 @@ class AgentController extends BaseController
                 $referral->currency = 'RWF';
 
                 if ($referral->student) {
-                    $referral->student->status = 'inactive';
                     $referral->student->is_active = false;
                     $referral->student->save();
                 }
@@ -497,7 +498,7 @@ class AgentController extends BaseController
 
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to update student action.',
+                'message' => $e->getMessage() ?: 'Failed to update student action.',
                 'error' => $e->getMessage(),
             ], 500);
         }
@@ -703,7 +704,7 @@ class AgentController extends BaseController
                 'email' => 'nullable|email|max:255|unique:users,email|required_without:phone',
                 'phone' => 'nullable|string|max:20|unique:users,phone|required_without:email',
                 'program_id' => 'required|integer|exists:programs,id',
-                'status' => ['nullable', Rule::in(['not_paid', 'pending', 'approved', 'paid', 'quit', 'rejected'])],
+                'status' => ['nullable', Rule::in(['not_paid', 'paid', 'quit'])],
                 'commission_percentage' => 'nullable|numeric|min:0|max:100',
                 'notes' => 'nullable|string|max:5000',
             ],
@@ -726,8 +727,8 @@ class AgentController extends BaseController
         $commissionPercentage = (float) $request->input('commission_percentage', $agentCommission);
         $commissionPercentage = max(0, min(100, $commissionPercentage));
 
-        $amountPaid = max(0, $programPrice);
-        $commissionAmount = $this->calculateCommissionAmount($amountPaid, $commissionPercentage);
+        $expectedAmountPaid = max(0, $programPrice);
+        $expectedCommissionAmount = $this->calculateCommissionAmount($expectedAmountPaid, $commissionPercentage);
 
         // student account remains active
         $studentAccountStatus = 'active';
@@ -759,9 +760,9 @@ class AgentController extends BaseController
                 'agent_user_id' => $agent->id,
                 'student_user_id' => $student->id,
                 'program_id' => $program->id,
-                'amount_paid' => $amountPaid,
+                'amount_paid' => 0,
                 'commission_percentage' => $commissionPercentage,
-                'commission_amount' => $commissionAmount,
+                'commission_amount' => $expectedCommissionAmount,
                 'currency' => 'RWF',
                 'status' => $referralStatus,
                 'notes' => $request->input('notes'),
@@ -978,16 +979,12 @@ class AgentController extends BaseController
 
     private function isApprovedReferralStatus(?string $status): bool
     {
-        return in_array(
-            strtolower(trim((string) $status)),
-            ['approved', 'paid'],
-            true
-        );
+        return strtolower(trim((string) $status)) === 'paid';
     }
 
     private function isPendingReferralStatus(?string $status): bool
     {
-        return in_array(strtolower(trim((string) $status)), ['pending', 'not_paid'], true);
+        return strtolower(trim((string) $status)) === 'not_paid';
     }
 
     private function syncAgentFinancials(User $agent): array
@@ -1016,22 +1013,33 @@ class AgentController extends BaseController
             $programPrice = $this->resolveProgramPrice($referral->program);
             $currentStatus = strtolower(trim((string) $referral->status));
 
-            if (in_array($currentStatus, ['approved', 'paid', 'pending', 'not_paid', 'quit', 'rejected'], true)) {
+            if ($currentStatus === 'approved') {
+                $status = 'paid';
+            } elseif ($currentStatus === 'pending') {
+                $status = 'not_paid';
+            } elseif ($currentStatus === 'rejected') {
+                $status = 'quit';
+            } elseif (in_array($currentStatus, ['paid', 'not_paid', 'quit'], true)) {
                 $status = $currentStatus;
             } else {
                 $status = 'not_paid';
             }
 
-            if (in_array($status, ['quit', 'rejected'], true)) {
+            $expectedAmountPaid = $programPrice > 0
+                ? $programPrice
+                : (float) ($referral->amount_paid ?? 0);
+            $expectedAmountPaid = round(max(0, $expectedAmountPaid), 2);
+            $expectedCommissionAmount = $this->calculateCommissionAmount($expectedAmountPaid, $commissionPercentage);
+
+            if ($status === 'paid') {
+                $amountPaid = $expectedAmountPaid;
+                $commissionAmount = $expectedCommissionAmount;
+            } elseif ($status === 'not_paid') {
+                $amountPaid = 0;
+                $commissionAmount = $expectedCommissionAmount;
+            } else {
                 $amountPaid = 0;
                 $commissionAmount = 0;
-            } else {
-                $amountPaid = $programPrice > 0
-                    ? $programPrice
-                    : (float) ($referral->amount_paid ?? 0);
-
-                $amountPaid = round(max(0, $amountPaid), 2);
-                $commissionAmount = $this->calculateCommissionAmount($amountPaid, $commissionPercentage);
             }
 
             $dirty = false;
@@ -1092,7 +1100,9 @@ class AgentController extends BaseController
         return [
             'total_students' => $totalStudents,
             'approved_students' => $approvedStudents,
+            'paid_students' => $approvedStudents,
             'pending_students' => $pendingStudents,
+            'not_paid_students' => $pendingStudents,
             'total_amount_paid' => round($totalAmountPaid, 2),
             'total_commission' => round($totalCommission, 2),
             'expected_commission' => round($expectedCommission, 2),
