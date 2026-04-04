@@ -300,12 +300,36 @@ class RegisterController extends BaseController
         ], 200);
     }
 
-    /**
+        /**
      * List users
      */
     public function index(Request $request): JsonResponse
     {
+        $authUser = $request->user();
         $query = User::with($this->buildUserRelations())->latest();
+
+        if ($authUser && $this->hasRole($authUser, 'agent')) {
+            $requestedRole = trim((string) $request->input('role', 'student'));
+
+            if ($request->filled('role') && $requestedRole !== 'student') {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Agents can only view students registered under them.',
+                ], 403);
+            }
+
+            $query->whereHas('roles', function ($q) {
+                $q->where('slug', 'student');
+            });
+
+            if (Schema::hasTable('agent_student_referrals')) {
+                $query->whereHas('referredByAgent', function ($q) use ($authUser) {
+                    $q->where('agent_user_id', $authUser->id);
+                });
+            } else {
+                $query->whereRaw('1 = 0');
+            }
+        }
 
         if ($request->filled('search')) {
             $search = trim((string) $request->search);
@@ -346,7 +370,6 @@ class RegisterController extends BaseController
             'data' => $users,
         ], 200);
     }
-
     /**
      * Admin create user
      * Password is auto-generated internally.
@@ -431,11 +454,12 @@ class RegisterController extends BaseController
         ], 201);
     }
 
-    /**
+        /**
      * Show one user
      */
-    public function show(string $id): JsonResponse
+    public function show(Request $request, string $id): JsonResponse
     {
+        $authUser = $request->user();
         $user = User::with($this->buildUserRelations())->find($id);
 
         if (!$user) {
@@ -443,6 +467,23 @@ class RegisterController extends BaseController
                 'success' => false,
                 'message' => 'User not found.',
             ], 404);
+        }
+
+        if ($authUser && $this->hasRole($authUser, 'agent')) {
+            $isOwnRecord = (int) $authUser->id === (int) $user->id;
+            $isOwnStudent = false;
+
+            if (!$isOwnRecord && Schema::hasTable('agent_student_referrals')) {
+                $user->loadMissing('referredByAgent');
+                $isOwnStudent = (int) optional($user->referredByAgent)->agent_user_id === (int) $authUser->id;
+            }
+
+            if (!$isOwnRecord && !$isOwnStudent) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Agents can only view their own profile or students registered under them.',
+                ], 403);
+            }
         }
 
         $this->ensureTrainerWallet($user);
@@ -453,7 +494,6 @@ class RegisterController extends BaseController
             'data' => $this->formatUser($user),
         ], 200);
     }
-
     /**
      * Update user
      */
@@ -657,7 +697,7 @@ class RegisterController extends BaseController
         ], 200);
     }
 
-    /**
+        /**
      * Program options for select boxes
      */
     public function programOptions(): JsonResponse
@@ -671,9 +711,24 @@ class RegisterController extends BaseController
         }
 
         $programs = Program::query()
-            ->select('id', 'name', 'slug', 'category', 'duration', 'start_date', 'end_date')
+            ->select($this->programOptionSelectColumns())
             ->latest()
-            ->get();
+            ->get()
+            ->map(function (Program $program) {
+                return [
+                    'id' => $program->id,
+                    'name' => $program->name,
+                    'slug' => $program->slug,
+                    'category' => $program->category,
+                    'duration' => $program->duration,
+                    'start_date' => $program->start_date,
+                    'end_date' => $program->end_date,
+                    'price' => Schema::hasColumn('programs', 'price')
+                        ? (float) ($program->price ?? 0)
+                        : 0,
+                ];
+            })
+            ->values();
 
         return response()->json([
             'success' => true,
@@ -681,7 +736,6 @@ class RegisterController extends BaseController
             'data' => $programs,
         ], 200);
     }
-
     /**
      * Get users assigned to one program
      */
@@ -840,14 +894,14 @@ class RegisterController extends BaseController
         $user->load($this->buildUserRelations());
     }
 
-    /**
+        /**
      * Build user relationships safely
      */
     private function buildUserRelations(): array
     {
         $relations = [
             'roles:id,name,slug',
-            'programs:id,name,slug,category,duration,start_date,end_date',
+            'programs:' . $this->programRelationshipColumns(),
         ];
 
         if (Schema::hasTable('agent_profiles')) {
@@ -857,12 +911,11 @@ class RegisterController extends BaseController
         if (Schema::hasTable('agent_student_referrals')) {
             $relations[] = 'referredByAgent:id,agent_user_id,student_user_id,program_id,amount_paid,commission_percentage,commission_amount,currency,status,registered_at';
             $relations[] = 'referredByAgent.agent:id,name,email,phone';
-            $relations[] = 'referredByAgent.program:id,name,slug';
+            $relations[] = 'referredByAgent.program:' . $this->programRelationshipColumns();
         }
 
         return $relations;
     }
-
     /**
      * Ensure wallet exists for trainer or agent
      */
@@ -892,7 +945,7 @@ class RegisterController extends BaseController
         );
     }
 
-    /**
+        /**
      * Format user for API response
      */
     private function formatUser(User $user): array
@@ -937,6 +990,9 @@ class RegisterController extends BaseController
                     'id' => $user->referredByAgent->program->id,
                     'name' => $user->referredByAgent->program->name,
                     'slug' => $user->referredByAgent->program->slug,
+                    'price' => Schema::hasColumn('programs', 'price')
+                        ? (float) ($user->referredByAgent->program->price ?? 0)
+                        : 0,
                 ] : null,
                 'amount_paid' => (float) $user->referredByAgent->amount_paid,
                 'commission_percentage' => (float) $user->referredByAgent->commission_percentage,
@@ -977,6 +1033,9 @@ class RegisterController extends BaseController
                     'duration'   => $program->duration,
                     'start_date' => $program->start_date,
                     'end_date'   => $program->end_date,
+                    'price'      => Schema::hasColumn('programs', 'price')
+                        ? (float) ($program->price ?? 0)
+                        : 0,
                 ];
             })->values(),
             'wallet' => $walletData,
@@ -984,11 +1043,54 @@ class RegisterController extends BaseController
             'referred_by_agent' => $referredByAgent,
         ];
     }
-
     /**
      * Resolve one primary role for frontend redirect
      */
-    private function resolvePrimaryRole(Collection $roles): ?array
+        private function isAdminish(?User $user): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        $user->loadMissing('roles:id,name,slug');
+
+        return $user->roles->contains(function ($role) {
+            return in_array((string) $role->slug, ['admin', 'ceo'], true);
+        });
+    }
+
+    private function hasRole(User $user, string $roleSlug): bool
+    {
+        $user->loadMissing('roles:id,name,slug');
+
+        return $user->roles->contains(function ($role) use ($roleSlug) {
+            return (string) $role->slug === $roleSlug;
+        });
+    }
+
+    private function programOptionSelectColumns(): array
+    {
+        $columns = ['id', 'name', 'slug', 'category', 'duration', 'start_date', 'end_date'];
+
+        if (Schema::hasColumn('programs', 'price')) {
+            $columns[] = 'price';
+        }
+
+        return $columns;
+    }
+
+    private function programRelationshipColumns(): string
+    {
+        $columns = ['id', 'name', 'slug', 'category', 'duration', 'start_date', 'end_date'];
+
+        if (Schema::hasColumn('programs', 'price')) {
+            $columns[] = 'price';
+        }
+
+        return implode(',', $columns);
+    }
+
+private function resolvePrimaryRole(Collection $roles): ?array
     {
         if ($roles->isEmpty()) {
             return null;

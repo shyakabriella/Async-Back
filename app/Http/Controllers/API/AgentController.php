@@ -23,7 +23,7 @@ use Illuminate\Validation\Rule;
 
 class AgentController extends BaseController
 {
-    /**
+        /**
      * Admin / CEO: list all agents
      */
     public function index(Request $request): JsonResponse
@@ -47,33 +47,16 @@ class AgentController extends BaseController
             ->latest()
             ->get()
             ->map(function (User $agent) {
-                $this->ensureAgentWallet($agent);
+                $totals = $this->syncAgentFinancials($agent);
+                $formatted = $this->formatAgent($agent->fresh(['roles:id,name,slug', 'agentProfile:id,user_id,image,commission_percentage,created_by']));
 
-                $wallet = Wallet::where('user_id', $agent->id)->first();
-                $totalStudents = AgentStudentReferral::where('agent_user_id', $agent->id)->count();
-                $totalCommission = AgentStudentReferral::where('agent_user_id', $agent->id)->sum('commission_amount');
-
-                return [
-                    'id' => $agent->id,
-                    'name' => $agent->name,
-                    'email' => $agent->email,
-                    'phone' => $agent->phone,
-                    'status' => $agent->status,
-                    'is_active' => (bool) $agent->is_active,
-                    'created_at' => optional($agent->created_at)->format('Y-m-d H:i:s'),
-                    'commission_percentage' => (float) optional($agent->agentProfile)->commission_percentage,
-                    'image' => optional($agent->agentProfile)->image,
-                    'image_url' => optional($agent->agentProfile)->image_url,
-                    'wallet' => [
-                        'balance' => $wallet ? (float) $wallet->balance : 0,
-                        'currency' => $wallet ? $wallet->currency : 'RWF',
-                        'status' => $wallet ? $wallet->status : 'active',
-                    ],
-                    'stats' => [
-                        'total_students' => $totalStudents,
-                        'total_commission' => (float) $totalCommission,
-                    ],
+                $formatted['stats'] = [
+                    'total_students' => $totals['total_students'],
+                    'total_amount_paid' => $totals['total_amount_paid'],
+                    'total_commission' => $totals['total_commission'],
                 ];
+
+                return $formatted;
             })
             ->values();
 
@@ -83,7 +66,6 @@ class AgentController extends BaseController
             'data' => $agents,
         ], 200);
     }
-
     /**
      * Admin / CEO: create agent
      */
@@ -370,7 +352,7 @@ class AgentController extends BaseController
         }
     }
 
-    /**
+        /**
      * Agent: dashboard (only own data)
      */
     public function myDashboard(Request $request): JsonResponse
@@ -389,13 +371,13 @@ class AgentController extends BaseController
             'agentProfile:id,user_id,image,commission_percentage,created_by',
         ]);
 
-        $this->ensureAgentWallet($agent);
+        $totals = $this->syncAgentFinancials($agent);
 
         $wallet = Wallet::where('user_id', $agent->id)->first();
 
         $referrals = AgentStudentReferral::with([
             'student:id,name,email,phone,status,is_active,created_at',
-            'program:id,name,slug',
+            $this->programRelationSelect(),
         ])
             ->where('agent_user_id', $agent->id)
             ->latest()
@@ -408,12 +390,10 @@ class AgentController extends BaseController
                 'currency' => $wallet ? $wallet->currency : 'RWF',
                 'status' => $wallet ? $wallet->status : 'active',
             ],
-            'stats' => [
-                'total_students' => $referrals->count(),
-                'total_amount_paid' => (float) $referrals->sum('amount_paid'),
-                'total_commission' => (float) $referrals->sum('commission_amount'),
-            ],
+            'stats' => $totals,
             'students' => $referrals->map(function (AgentStudentReferral $referral) {
+                $programPrice = $this->resolveProgramPrice($referral->program);
+
                 return [
                     'referral_id' => $referral->id,
                     'student_id' => $referral->student_user_id,
@@ -424,11 +404,13 @@ class AgentController extends BaseController
                         'id' => $referral->program->id,
                         'name' => $referral->program->name,
                         'slug' => $referral->program->slug,
+                        'price' => $programPrice,
                     ] : null,
+                    'program_price' => $programPrice,
                     'amount_paid' => (float) $referral->amount_paid,
                     'commission_percentage' => (float) $referral->commission_percentage,
                     'commission_amount' => (float) $referral->commission_amount,
-                    'currency' => $referral->currency,
+                    'currency' => $referral->currency ?: 'RWF',
                     'status' => $referral->status,
                     'registered_at' => optional($referral->registered_at)->format('Y-m-d H:i:s'),
                     'created_at' => optional($referral->created_at)->format('Y-m-d H:i:s'),
@@ -442,8 +424,7 @@ class AgentController extends BaseController
             'data' => $data,
         ], 200);
     }
-
-    /**
+        /**
      * Agent: register student under himself
      */
     public function registerStudent(Request $request): JsonResponse
@@ -463,10 +444,12 @@ class AgentController extends BaseController
                 'name' => 'required|string|max:255',
                 'email' => 'nullable|email|max:255|unique:users,email|required_without:phone',
                 'phone' => 'nullable|string|max:20|unique:users,phone|required_without:email',
-                'program_id' => 'nullable|integer|exists:programs,id',
+                'program_id' => 'required|integer|exists:programs,id',
+                'status' => ['nullable', Rule::in(['active', 'inactive', 'suspended'])],
+                'is_active' => 'nullable|boolean',
                 'amount_paid' => 'nullable|numeric|min:0',
                 'commission_percentage' => 'nullable|numeric|min:0|max:100',
-                'notes' => 'nullable|string',
+                'notes' => 'nullable|string|max:5000',
             ],
             [
                 'email.required_without' => 'Email or phone is required.',
@@ -479,34 +462,49 @@ class AgentController extends BaseController
         }
 
         $agent->load('agentProfile');
+
+        $program = Program::find((int) $request->input('program_id'));
+        $programPrice = $this->resolveProgramPrice($program);
+
+        $status = $request->input('status', 'active');
+        $isActive = $request->has('is_active')
+            ? (bool) $request->boolean('is_active')
+            : $status === 'active';
+
         $agentCommission = (float) optional($agent->agentProfile)->commission_percentage;
         $commissionPercentage = (float) $request->input('commission_percentage', $agentCommission);
-        $amountPaid = (float) $request->input('amount_paid', 0);
-        $commissionAmount = ($amountPaid * $commissionPercentage) / 100;
+        $commissionPercentage = max(0, min(100, $commissionPercentage));
+
+        $amountPaid = $request->filled('amount_paid')
+            ? (float) $request->input('amount_paid')
+            : $programPrice;
+
+        $amountPaid = max(0, $amountPaid);
+        $commissionAmount = $this->calculateCommissionAmount($amountPaid, $commissionPercentage);
 
         DB::beginTransaction();
 
         try {
             $student = User::create([
                 'name' => trim((string) $request->name),
-                'email' => $request->email,
-                'phone' => $request->phone,
+                'email' => $request->email ? trim((string) $request->email) : null,
+                'phone' => $request->phone ? trim((string) $request->phone) : null,
                 'password' => Hash::make(Str::random(32)),
-                'status' => 'active',
-                'is_active' => true,
+                'status' => $status,
+                'is_active' => $isActive,
                 'last_login_at' => null,
             ]);
 
             $this->assignRole($student, 'student');
 
-            if ($request->filled('program_id') && Schema::hasTable('program_user')) {
-                $student->programs()->sync([(int) $request->program_id]);
+            if (Schema::hasTable('program_user')) {
+                $student->programs()->sync([(int) $program->id]);
             }
 
             $referral = AgentStudentReferral::create([
                 'agent_user_id' => $agent->id,
                 'student_user_id' => $student->id,
-                'program_id' => $request->input('program_id'),
+                'program_id' => $program->id,
                 'amount_paid' => $amountPaid,
                 'commission_percentage' => $commissionPercentage,
                 'commission_amount' => $commissionAmount,
@@ -515,21 +513,6 @@ class AgentController extends BaseController
                 'notes' => $request->input('notes'),
                 'registered_at' => now(),
             ]);
-
-            $this->ensureAgentWallet($agent);
-
-            if ($commissionAmount > 0) {
-                $wallet = Wallet::firstOrCreate(
-                    ['user_id' => $agent->id],
-                    [
-                        'balance' => 0,
-                        'currency' => 'RWF',
-                        'status' => 'active',
-                    ]
-                );
-
-                $wallet->increment('balance', $commissionAmount);
-            }
 
             $emailSetupSent = false;
             $emailSetupMessage = null;
@@ -552,11 +535,13 @@ class AgentController extends BaseController
                 }
             }
 
+            $totals = $this->syncAgentFinancials($agent);
+
             DB::commit();
 
-            $referral->load([
+            $referral->refresh()->load([
                 'student:id,name,email,phone,status,is_active,created_at',
-                'program:id,name,slug',
+                $this->programRelationSelect(),
             ]);
 
             return response()->json([
@@ -575,12 +560,18 @@ class AgentController extends BaseController
                             'id' => $referral->program->id,
                             'name' => $referral->program->name,
                             'slug' => $referral->program->slug,
+                            'price' => $this->resolveProgramPrice($referral->program),
                         ] : null,
                         'amount_paid' => (float) $referral->amount_paid,
                         'commission_percentage' => (float) $referral->commission_percentage,
                         'commission_amount' => (float) $referral->commission_amount,
                         'currency' => $referral->currency,
                         'status' => $referral->status,
+                    ],
+                    'wallet' => [
+                        'balance' => $totals['total_commission'],
+                        'currency' => 'RWF',
+                        'status' => 'active',
                     ],
                     'email_setup_sent' => $emailSetupSent,
                     'email_setup_message' => $emailSetupMessage,
@@ -601,7 +592,6 @@ class AgentController extends BaseController
             ], 500);
         }
     }
-
     /**
      * Helpers
      */
@@ -656,7 +646,131 @@ class AgentController extends BaseController
         );
     }
 
-    private function sendAccountSetupEmail(User $user): bool
+        private function programRelationSelect(): string
+    {
+        $columns = ['id', 'name', 'slug'];
+
+        if (Schema::hasTable('programs') && Schema::hasColumn('programs', 'price')) {
+            $columns[] = 'price';
+        }
+
+        return 'program:' . implode(',', $columns);
+    }
+
+    private function resolveProgramPrice(?Program $program): float
+    {
+        if (!$program) {
+            return 0;
+        }
+
+        return Schema::hasTable('programs') && Schema::hasColumn('programs', 'price')
+            ? (float) ($program->price ?? 0)
+            : 0;
+    }
+
+    private function calculateCommissionAmount(float $amountPaid, float $commissionPercentage): float
+    {
+        $amountPaid = max(0, $amountPaid);
+        $commissionPercentage = max(0, min(100, $commissionPercentage));
+
+        return round(($amountPaid * $commissionPercentage) / 100, 2);
+    }
+
+    private function syncAgentFinancials(User $agent): array
+    {
+        $agent->loadMissing('agentProfile:id,user_id,commission_percentage');
+
+        $this->ensureAgentWallet($agent);
+
+        $commissionPercentage = max(
+            0,
+            min(100, (float) optional($agent->agentProfile)->commission_percentage)
+        );
+
+        $referrals = AgentStudentReferral::with([$this->programRelationSelect()])
+            ->where('agent_user_id', $agent->id)
+            ->get();
+
+        $totalStudents = $referrals->count();
+        $totalAmountPaid = 0;
+        $totalCommission = 0;
+
+        foreach ($referrals as $referral) {
+            $programPrice = $this->resolveProgramPrice($referral->program);
+            $amountPaid = $programPrice > 0
+                ? $programPrice
+                : (float) ($referral->amount_paid ?? 0);
+
+            $amountPaid = round(max(0, $amountPaid), 2);
+            $commissionAmount = $this->calculateCommissionAmount($amountPaid, $commissionPercentage);
+
+            $currentStatus = strtolower((string) $referral->status);
+            $status = $amountPaid > 0
+                ? ($currentStatus === 'paid' ? 'paid' : 'approved')
+                : (in_array($currentStatus, ['rejected', 'inactive', 'suspended'], true) ? $referral->status : 'pending');
+
+            $dirty = false;
+
+            if ((float) $referral->amount_paid !== $amountPaid) {
+                $referral->amount_paid = $amountPaid;
+                $dirty = true;
+            }
+
+            if ((float) $referral->commission_percentage !== $commissionPercentage) {
+                $referral->commission_percentage = $commissionPercentage;
+                $dirty = true;
+            }
+
+            if ((float) $referral->commission_amount !== $commissionAmount) {
+                $referral->commission_amount = $commissionAmount;
+                $dirty = true;
+            }
+
+            if ((string) $referral->currency !== 'RWF') {
+                $referral->currency = 'RWF';
+                $dirty = true;
+            }
+
+            if ((string) $referral->status !== (string) $status) {
+                $referral->status = $status;
+                $dirty = true;
+            }
+
+            if (!$referral->registered_at) {
+                $referral->registered_at = $referral->created_at ?: now();
+                $dirty = true;
+            }
+
+            if ($dirty) {
+                $referral->save();
+            }
+
+            $totalAmountPaid += (float) $referral->amount_paid;
+            $totalCommission += (float) $referral->commission_amount;
+        }
+
+        $wallet = Wallet::firstOrCreate(
+            ['user_id' => $agent->id],
+            [
+                'balance' => 0,
+                'currency' => 'RWF',
+                'status' => 'active',
+            ]
+        );
+
+        $wallet->balance = round($totalCommission, 2);
+        $wallet->currency = 'RWF';
+        $wallet->status = $wallet->status ?: 'active';
+        $wallet->save();
+
+        return [
+            'total_students' => $totalStudents,
+            'total_amount_paid' => round($totalAmountPaid, 2),
+            'total_commission' => round($totalCommission, 2),
+        ];
+    }
+
+private function sendAccountSetupEmail(User $user): bool
     {
         if (empty($user->email)) {
             return false;

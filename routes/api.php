@@ -76,6 +76,7 @@ Route::prefix('support-chat')->group(function () {
 |--------------------------------------------------------------------------
 */
 Route::middleware('auth:sanctum')->group(function () {
+
     /*
     |--------------------------------------------------------------------------
     | Authenticated account routes
@@ -115,16 +116,30 @@ Route::middleware('auth:sanctum')->group(function () {
     |--------------------------------------------------------------------------
     */
     Route::prefix('agents')->controller(AgentController::class)->group(function () {
-        // Admin / CEO
+        /*
+        |--------------------------------------------------------------------------
+        | Agent own dashboard / student registration
+        |--------------------------------------------------------------------------
+        | Keep these before /{id} so route matching stays correct.
+        */
+        Route::get('me/dashboard', 'myDashboard');
+
+        // Main route used by updated Addintern page
+        Route::post('register-student', 'registerStudent');
+
+        // Backward-compatible alias for older frontend pages
+        Route::post('students/register', 'registerStudent');
+
+        /*
+        |--------------------------------------------------------------------------
+        | Admin / CEO agent management
+        |--------------------------------------------------------------------------
+        */
         Route::get('/', 'index');
         Route::post('/', 'store');
-        Route::get('/{id}', 'show');
-        Route::put('/{id}', 'update');
-        Route::patch('/{id}', 'update');
-
-        // Agent own box / dashboard
-        Route::get('/me/dashboard', 'myDashboard');
-        Route::post('/students/register', 'registerStudent');
+        Route::get('{id}', 'show');
+        Route::put('{id}', 'update');
+        Route::patch('{id}', 'update');
     });
 
     /*
