@@ -237,6 +237,116 @@ class AgentController extends BaseController
     }
 
     /**
+     * Admin / CEO: show one agent dashboard with students
+     * Agent can also view his own detailed dashboard
+     */
+    public function detailDashboard(Request $request, string $id): JsonResponse
+    {
+        $authUser = $request->user();
+
+        $agent = User::with([
+            'roles:id,name,slug',
+            'agentProfile:id,user_id,image,commission_percentage,created_by',
+        ])->find($id);
+
+        if (!$agent) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Agent not found.',
+            ], 404);
+        }
+
+        if (!$this->hasRole($agent, 'agent')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'The selected user is not an agent.',
+            ], 422);
+        }
+
+        $isSelf = $authUser && (int) $authUser->id === (int) $agent->id;
+
+        if (!$isSelf && !$this->isAdminish($authUser)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'You are not allowed to view this agent dashboard.',
+            ], 403);
+        }
+
+        $agent->load([
+            'roles:id,name,slug',
+            'agentProfile:id,user_id,image,commission_percentage,created_by',
+        ]);
+
+        $totals = $this->syncAgentFinancials($agent);
+        $wallet = Wallet::where('user_id', $agent->id)->first();
+        $students = $this->getAgentReferralRows($agent);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Agent detail dashboard retrieved successfully.',
+            'data' => [
+                'agent' => $this->formatAgent($agent),
+                'wallet' => [
+                    'balance' => $wallet ? (float) $wallet->balance : 0,
+                    'currency' => $wallet ? $wallet->currency : 'RWF',
+                    'status' => $wallet ? $wallet->status : 'active',
+                ],
+                'stats' => $totals,
+                'students' => $students,
+            ],
+        ], 200);
+    }
+
+    /**
+     * Admin / CEO: list one agent students only
+     * Agent can also view his own students list
+     */
+    public function students(Request $request, string $id): JsonResponse
+    {
+        $authUser = $request->user();
+
+        $agent = User::with([
+            'roles:id,name,slug',
+            'agentProfile:id,user_id,image,commission_percentage,created_by',
+        ])->find($id);
+
+        if (!$agent) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Agent not found.',
+            ], 404);
+        }
+
+        if (!$this->hasRole($agent, 'agent')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'The selected user is not an agent.',
+            ], 422);
+        }
+
+        $isSelf = $authUser && (int) $authUser->id === (int) $agent->id;
+
+        if (!$isSelf && !$this->isAdminish($authUser)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'You are not allowed to view this agent students list.',
+            ], 403);
+        }
+
+        $this->syncAgentFinancials($agent);
+        $students = $this->getAgentReferralRows($agent);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Agent students retrieved successfully.',
+            'data' => [
+                'agent' => $this->formatAgent($agent),
+                'students' => $students,
+            ],
+        ], 200);
+    }
+
+    /**
      * Admin / CEO: update one agent
      */
     public function update(Request $request, string $id): JsonResponse
@@ -397,14 +507,6 @@ class AgentController extends BaseController
         $totals = $this->syncAgentFinancials($agent);
         $wallet = Wallet::where('user_id', $agent->id)->first();
 
-        $referrals = AgentStudentReferral::with([
-            'student:id,name,email,phone,status,is_active,created_at',
-            $this->programRelationSelect(),
-        ])
-            ->where('agent_user_id', $agent->id)
-            ->latest()
-            ->get();
-
         $data = [
             'agent' => $this->formatAgent($agent),
             'wallet' => [
@@ -413,31 +515,7 @@ class AgentController extends BaseController
                 'status' => $wallet ? $wallet->status : 'active',
             ],
             'stats' => $totals,
-            'students' => $referrals->map(function (AgentStudentReferral $referral) {
-                $programPrice = $this->resolveProgramPrice($referral->program);
-
-                return [
-                    'referral_id' => $referral->id,
-                    'student_id' => $referral->student_user_id,
-                    'student_name' => optional($referral->student)->name,
-                    'student_email' => optional($referral->student)->email,
-                    'student_phone' => optional($referral->student)->phone,
-                    'program' => $referral->program ? [
-                        'id' => $referral->program->id,
-                        'name' => $referral->program->name,
-                        'slug' => $referral->program->slug,
-                        'price' => $programPrice,
-                    ] : null,
-                    'program_price' => $programPrice,
-                    'amount_paid' => (float) $referral->amount_paid,
-                    'commission_percentage' => (float) $referral->commission_percentage,
-                    'commission_amount' => (float) $referral->commission_amount,
-                    'currency' => $referral->currency ?: 'RWF',
-                    'status' => $referral->status,
-                    'registered_at' => optional($referral->registered_at)->format('Y-m-d H:i:s'),
-                    'created_at' => optional($referral->created_at)->format('Y-m-d H:i:s'),
-                ];
-            })->values(),
+            'students' => $this->getAgentReferralRows($agent),
         ];
 
         return response()->json([
@@ -610,6 +688,51 @@ class AgentController extends BaseController
                 'error' => $e->getMessage(),
             ], 500);
         }
+    }
+
+    /**
+     * Shared helpers
+     */
+    private function getAgentReferralRows(User $agent)
+    {
+        return AgentStudentReferral::with([
+            'student:id,name,email,phone,status,is_active,created_at',
+            $this->programRelationSelect(),
+        ])
+            ->where('agent_user_id', $agent->id)
+            ->latest()
+            ->get()
+            ->map(function (AgentStudentReferral $referral) {
+                return $this->formatReferralRow($referral);
+            })
+            ->values();
+    }
+
+    private function formatReferralRow(AgentStudentReferral $referral): array
+    {
+        $programPrice = $this->resolveProgramPrice($referral->program);
+
+        return [
+            'referral_id' => $referral->id,
+            'student_id' => $referral->student_user_id,
+            'student_name' => optional($referral->student)->name,
+            'student_email' => optional($referral->student)->email,
+            'student_phone' => optional($referral->student)->phone,
+            'program' => $referral->program ? [
+                'id' => $referral->program->id,
+                'name' => $referral->program->name,
+                'slug' => $referral->program->slug,
+                'price' => $programPrice,
+            ] : null,
+            'program_price' => $programPrice,
+            'amount_paid' => (float) $referral->amount_paid,
+            'commission_percentage' => (float) $referral->commission_percentage,
+            'commission_amount' => (float) $referral->commission_amount,
+            'currency' => $referral->currency ?: 'RWF',
+            'status' => $referral->status,
+            'registered_at' => optional($referral->registered_at)->format('Y-m-d H:i:s'),
+            'created_at' => optional($referral->created_at)->format('Y-m-d H:i:s'),
+        ];
     }
 
     /**
