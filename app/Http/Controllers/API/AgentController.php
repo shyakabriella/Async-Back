@@ -1,0 +1,706 @@
+<?php
+
+namespace App\Http\Controllers\API;
+
+use App\Http\Controllers\API\BaseController as BaseController;
+use App\Models\AgentProfile;
+use App\Models\AgentStudentReferral;
+use App\Models\Program;
+use App\Models\Role;
+use App\Models\User;
+use App\Models\Wallet;
+use App\Notifications\AccountSetupNotification;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Password;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
+
+class AgentController extends BaseController
+{
+    /**
+     * Admin / CEO: list all agents
+     */
+    public function index(Request $request): JsonResponse
+    {
+        $authUser = $request->user();
+
+        if (!$this->isAdminish($authUser)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Only admin or CEO can view agents.',
+            ], 403);
+        }
+
+        $agents = User::with([
+            'roles:id,name,slug',
+            'agentProfile:id,user_id,image,commission_percentage,created_by',
+        ])
+            ->whereHas('roles', function ($q) {
+                $q->where('slug', 'agent');
+            })
+            ->latest()
+            ->get()
+            ->map(function (User $agent) {
+                $this->ensureAgentWallet($agent);
+
+                $wallet = Wallet::where('user_id', $agent->id)->first();
+                $totalStudents = AgentStudentReferral::where('agent_user_id', $agent->id)->count();
+                $totalCommission = AgentStudentReferral::where('agent_user_id', $agent->id)->sum('commission_amount');
+
+                return [
+                    'id' => $agent->id,
+                    'name' => $agent->name,
+                    'email' => $agent->email,
+                    'phone' => $agent->phone,
+                    'status' => $agent->status,
+                    'is_active' => (bool) $agent->is_active,
+                    'created_at' => optional($agent->created_at)->format('Y-m-d H:i:s'),
+                    'commission_percentage' => (float) optional($agent->agentProfile)->commission_percentage,
+                    'image' => optional($agent->agentProfile)->image,
+                    'image_url' => optional($agent->agentProfile)->image_url,
+                    'wallet' => [
+                        'balance' => $wallet ? (float) $wallet->balance : 0,
+                        'currency' => $wallet ? $wallet->currency : 'RWF',
+                        'status' => $wallet ? $wallet->status : 'active',
+                    ],
+                    'stats' => [
+                        'total_students' => $totalStudents,
+                        'total_commission' => (float) $totalCommission,
+                    ],
+                ];
+            })
+            ->values();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Agents retrieved successfully.',
+            'data' => $agents,
+        ], 200);
+    }
+
+    /**
+     * Admin / CEO: create agent
+     */
+    public function store(Request $request): JsonResponse
+    {
+        $authUser = $request->user();
+
+        if (!$this->isAdminish($authUser)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Only admin or CEO can create agents.',
+            ], 403);
+        }
+
+        $validator = Validator::make(
+            $request->all(),
+            [
+                'name' => 'required|string|max:255',
+                'email' => 'required|email|max:255|unique:users,email',
+                'phone' => 'required|string|max:20|unique:users,phone',
+                'image' => 'nullable|image|mimes:jpg,jpeg,png,webp|max:2048',
+                'commission_percentage' => 'nullable|numeric|min:0|max:100',
+                'status' => ['nullable', Rule::in(['active', 'inactive', 'suspended'])],
+                'is_active' => 'nullable|boolean',
+            ]
+        );
+
+        if ($validator->fails()) {
+            return $this->sendError('Validation Error.', $validator->errors(), 422);
+        }
+
+        $status = $request->input('status', 'active');
+        $isActive = $request->has('is_active')
+            ? (bool) $request->boolean('is_active')
+            : $status === 'active';
+
+        DB::beginTransaction();
+
+        try {
+            $user = User::create([
+                'name' => trim((string) $request->name),
+                'email' => trim((string) $request->email),
+                'phone' => trim((string) $request->phone),
+                'password' => Hash::make(Str::random(32)),
+                'status' => $status,
+                'is_active' => $isActive,
+                'last_login_at' => null,
+            ]);
+
+            $this->assignRole($user, 'agent');
+            $this->ensureAgentWallet($user);
+
+            $imagePath = null;
+            if ($request->hasFile('image')) {
+                $imagePath = $request->file('image')->store('agents', 'public');
+            }
+
+            AgentProfile::updateOrCreate(
+                ['user_id' => $user->id],
+                [
+                    'image' => $imagePath,
+                    'commission_percentage' => (float) $request->input('commission_percentage', 0),
+                    'created_by' => $authUser?->id,
+                ]
+            );
+
+            $emailSetupSent = false;
+            $emailSetupMessage = 'Agent created, but account setup email could not be sent.';
+
+            try {
+                $emailSetupSent = $this->sendAccountSetupEmail($user);
+                $emailSetupMessage = $emailSetupSent
+                    ? 'Agent created successfully and account setup email sent.'
+                    : 'Agent created, but account setup email could not be sent.';
+            } catch (\Throwable $e) {
+                Log::error('Failed to send agent account setup email.', [
+                    'user_id' => $user->id,
+                    'email' => $user->email,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
+            DB::commit();
+
+            $user->load(['roles:id,name,slug', 'agentProfile:id,user_id,image,commission_percentage,created_by']);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Agent created successfully.',
+                'data' => [
+                    'agent' => $this->formatAgent($user),
+                    'email_setup_sent' => $emailSetupSent,
+                    'email_setup_message' => $emailSetupMessage,
+                ],
+            ], 201);
+        } catch (\Throwable $e) {
+            DB::rollBack();
+
+            Log::error('Failed to create agent.', [
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to create agent.',
+                'error' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Admin / CEO: show one agent
+     * Agent can also view his own record
+     */
+    public function show(Request $request, string $id): JsonResponse
+    {
+        $authUser = $request->user();
+
+        $agent = User::with([
+            'roles:id,name,slug',
+            'agentProfile:id,user_id,image,commission_percentage,created_by',
+        ])->find($id);
+
+        if (!$agent) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Agent not found.',
+            ], 404);
+        }
+
+        if (!$this->hasRole($agent, 'agent')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This user is not an agent.',
+            ], 422);
+        }
+
+        if (!$this->isAdminish($authUser) && (int) $authUser->id !== (int) $agent->id) {
+            return response()->json([
+                'success' => false,
+                'message' => 'You are not allowed to view this agent.',
+            ], 403);
+        }
+
+        $this->ensureAgentWallet($agent);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Agent retrieved successfully.',
+            'data' => $this->formatAgent($agent),
+        ], 200);
+    }
+
+    /**
+     * Admin / CEO: update agent
+     */
+    public function update(Request $request, string $id): JsonResponse
+    {
+        $authUser = $request->user();
+
+        if (!$this->isAdminish($authUser)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Only admin or CEO can update agents.',
+            ], 403);
+        }
+
+        $agent = User::with(['roles:id,name,slug', 'agentProfile'])->find($id);
+
+        if (!$agent) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Agent not found.',
+            ], 404);
+        }
+
+        if (!$this->hasRole($agent, 'agent')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This user is not an agent.',
+            ], 422);
+        }
+
+        $validator = Validator::make(
+            $request->all(),
+            [
+                'name' => 'sometimes|required|string|max:255',
+                'email' => [
+                    'sometimes',
+                    'required',
+                    'email',
+                    'max:255',
+                    Rule::unique('users', 'email')->ignore($agent->id),
+                ],
+                'phone' => [
+                    'sometimes',
+                    'required',
+                    'string',
+                    'max:20',
+                    Rule::unique('users', 'phone')->ignore($agent->id),
+                ],
+                'image' => 'nullable|image|mimes:jpg,jpeg,png,webp|max:2048',
+                'commission_percentage' => 'nullable|numeric|min:0|max:100',
+                'status' => ['nullable', Rule::in(['active', 'inactive', 'suspended'])],
+                'is_active' => 'nullable|boolean',
+            ]
+        );
+
+        if ($validator->fails()) {
+            return $this->sendError('Validation Error.', $validator->errors(), 422);
+        }
+
+        DB::beginTransaction();
+
+        try {
+            $payload = [];
+
+            if ($request->filled('name')) {
+                $payload['name'] = trim((string) $request->name);
+            }
+
+            if ($request->filled('email')) {
+                $payload['email'] = trim((string) $request->email);
+            }
+
+            if ($request->filled('phone')) {
+                $payload['phone'] = trim((string) $request->phone);
+            }
+
+            if (array_key_exists('status', $request->all())) {
+                $payload['status'] = $request->status;
+            }
+
+            if (array_key_exists('is_active', $request->all())) {
+                $payload['is_active'] = (bool) $request->boolean('is_active');
+            } elseif (array_key_exists('status', $request->all())) {
+                $payload['is_active'] = $request->status === 'active';
+            }
+
+            if (!empty($payload)) {
+                $agent->update($payload);
+            }
+
+            $profilePayload = [];
+
+            if ($request->hasFile('image')) {
+                $profilePayload['image'] = $request->file('image')->store('agents', 'public');
+            }
+
+            if (array_key_exists('commission_percentage', $request->all())) {
+                $profilePayload['commission_percentage'] = (float) $request->input('commission_percentage', 0);
+            }
+
+            if (!empty($profilePayload)) {
+                AgentProfile::updateOrCreate(
+                    ['user_id' => $agent->id],
+                    $profilePayload
+                );
+            }
+
+            DB::commit();
+
+            $agent->refresh()->load(['roles:id,name,slug', 'agentProfile']);
+            $this->ensureAgentWallet($agent);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Agent updated successfully.',
+                'data' => $this->formatAgent($agent),
+            ], 200);
+        } catch (\Throwable $e) {
+            DB::rollBack();
+
+            Log::error('Failed to update agent.', [
+                'agent_id' => $agent->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to update agent.',
+                'error' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Agent: dashboard (only own data)
+     */
+    public function myDashboard(Request $request): JsonResponse
+    {
+        $agent = $request->user();
+
+        if (!$agent || !$this->hasRole($agent, 'agent')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Only an agent can view this dashboard.',
+            ], 403);
+        }
+
+        $agent->load([
+            'roles:id,name,slug',
+            'agentProfile:id,user_id,image,commission_percentage,created_by',
+        ]);
+
+        $this->ensureAgentWallet($agent);
+
+        $wallet = Wallet::where('user_id', $agent->id)->first();
+
+        $referrals = AgentStudentReferral::with([
+            'student:id,name,email,phone,status,is_active,created_at',
+            'program:id,name,slug',
+        ])
+            ->where('agent_user_id', $agent->id)
+            ->latest()
+            ->get();
+
+        $data = [
+            'agent' => $this->formatAgent($agent),
+            'wallet' => [
+                'balance' => $wallet ? (float) $wallet->balance : 0,
+                'currency' => $wallet ? $wallet->currency : 'RWF',
+                'status' => $wallet ? $wallet->status : 'active',
+            ],
+            'stats' => [
+                'total_students' => $referrals->count(),
+                'total_amount_paid' => (float) $referrals->sum('amount_paid'),
+                'total_commission' => (float) $referrals->sum('commission_amount'),
+            ],
+            'students' => $referrals->map(function (AgentStudentReferral $referral) {
+                return [
+                    'referral_id' => $referral->id,
+                    'student_id' => $referral->student_user_id,
+                    'student_name' => optional($referral->student)->name,
+                    'student_email' => optional($referral->student)->email,
+                    'student_phone' => optional($referral->student)->phone,
+                    'program' => $referral->program ? [
+                        'id' => $referral->program->id,
+                        'name' => $referral->program->name,
+                        'slug' => $referral->program->slug,
+                    ] : null,
+                    'amount_paid' => (float) $referral->amount_paid,
+                    'commission_percentage' => (float) $referral->commission_percentage,
+                    'commission_amount' => (float) $referral->commission_amount,
+                    'currency' => $referral->currency,
+                    'status' => $referral->status,
+                    'registered_at' => optional($referral->registered_at)->format('Y-m-d H:i:s'),
+                    'created_at' => optional($referral->created_at)->format('Y-m-d H:i:s'),
+                ];
+            })->values(),
+        ];
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Agent dashboard retrieved successfully.',
+            'data' => $data,
+        ], 200);
+    }
+
+    /**
+     * Agent: register student under himself
+     */
+    public function registerStudent(Request $request): JsonResponse
+    {
+        $agent = $request->user();
+
+        if (!$agent || !$this->hasRole($agent, 'agent')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Only an agent can register a student.',
+            ], 403);
+        }
+
+        $validator = Validator::make(
+            $request->all(),
+            [
+                'name' => 'required|string|max:255',
+                'email' => 'nullable|email|max:255|unique:users,email|required_without:phone',
+                'phone' => 'nullable|string|max:20|unique:users,phone|required_without:email',
+                'program_id' => 'nullable|integer|exists:programs,id',
+                'amount_paid' => 'nullable|numeric|min:0',
+                'commission_percentage' => 'nullable|numeric|min:0|max:100',
+                'notes' => 'nullable|string',
+            ],
+            [
+                'email.required_without' => 'Email or phone is required.',
+                'phone.required_without' => 'Phone or email is required.',
+            ]
+        );
+
+        if ($validator->fails()) {
+            return $this->sendError('Validation Error.', $validator->errors(), 422);
+        }
+
+        $agent->load('agentProfile');
+        $agentCommission = (float) optional($agent->agentProfile)->commission_percentage;
+        $commissionPercentage = (float) $request->input('commission_percentage', $agentCommission);
+        $amountPaid = (float) $request->input('amount_paid', 0);
+        $commissionAmount = ($amountPaid * $commissionPercentage) / 100;
+
+        DB::beginTransaction();
+
+        try {
+            $student = User::create([
+                'name' => trim((string) $request->name),
+                'email' => $request->email,
+                'phone' => $request->phone,
+                'password' => Hash::make(Str::random(32)),
+                'status' => 'active',
+                'is_active' => true,
+                'last_login_at' => null,
+            ]);
+
+            $this->assignRole($student, 'student');
+
+            if ($request->filled('program_id') && Schema::hasTable('program_user')) {
+                $student->programs()->sync([(int) $request->program_id]);
+            }
+
+            $referral = AgentStudentReferral::create([
+                'agent_user_id' => $agent->id,
+                'student_user_id' => $student->id,
+                'program_id' => $request->input('program_id'),
+                'amount_paid' => $amountPaid,
+                'commission_percentage' => $commissionPercentage,
+                'commission_amount' => $commissionAmount,
+                'currency' => 'RWF',
+                'status' => $amountPaid > 0 ? 'approved' : 'pending',
+                'notes' => $request->input('notes'),
+                'registered_at' => now(),
+            ]);
+
+            $this->ensureAgentWallet($agent);
+
+            if ($commissionAmount > 0) {
+                $wallet = Wallet::firstOrCreate(
+                    ['user_id' => $agent->id],
+                    [
+                        'balance' => 0,
+                        'currency' => 'RWF',
+                        'status' => 'active',
+                    ]
+                );
+
+                $wallet->increment('balance', $commissionAmount);
+            }
+
+            $emailSetupSent = false;
+            $emailSetupMessage = null;
+
+            if (!empty($student->email)) {
+                try {
+                    $emailSetupSent = $this->sendAccountSetupEmail($student);
+                    $emailSetupMessage = $emailSetupSent
+                        ? 'Student created and setup email sent successfully.'
+                        : 'Student created, but setup email could not be sent.';
+                } catch (\Throwable $e) {
+                    Log::error('Failed to send student account setup email.', [
+                        'student_id' => $student->id,
+                        'email' => $student->email,
+                        'error' => $e->getMessage(),
+                    ]);
+
+                    $emailSetupSent = false;
+                    $emailSetupMessage = 'Student created, but setup email could not be sent.';
+                }
+            }
+
+            DB::commit();
+
+            $referral->load([
+                'student:id,name,email,phone,status,is_active,created_at',
+                'program:id,name,slug',
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Student registered under agent successfully.',
+                'data' => [
+                    'student' => [
+                        'id' => $student->id,
+                        'name' => $student->name,
+                        'email' => $student->email,
+                        'phone' => $student->phone,
+                    ],
+                    'referral' => [
+                        'id' => $referral->id,
+                        'program' => $referral->program ? [
+                            'id' => $referral->program->id,
+                            'name' => $referral->program->name,
+                            'slug' => $referral->program->slug,
+                        ] : null,
+                        'amount_paid' => (float) $referral->amount_paid,
+                        'commission_percentage' => (float) $referral->commission_percentage,
+                        'commission_amount' => (float) $referral->commission_amount,
+                        'currency' => $referral->currency,
+                        'status' => $referral->status,
+                    ],
+                    'email_setup_sent' => $emailSetupSent,
+                    'email_setup_message' => $emailSetupMessage,
+                ],
+            ], 201);
+        } catch (\Throwable $e) {
+            DB::rollBack();
+
+            Log::error('Agent failed to register student.', [
+                'agent_id' => $agent->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to register student under agent.',
+                'error' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Helpers
+     */
+    private function isAdminish(?User $user): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        $user->loadMissing('roles:id,name,slug');
+
+        return $user->roles->contains(function ($role) {
+            return in_array((string) $role->slug, ['admin', 'ceo'], true);
+        });
+    }
+
+    private function hasRole(User $user, string $slug): bool
+    {
+        $user->loadMissing('roles:id,name,slug');
+
+        return $user->roles->contains(function ($role) use ($slug) {
+            return (string) $role->slug === $slug;
+        });
+    }
+
+    private function assignRole(User $user, string $roleSlug): void
+    {
+        $role = Role::where('slug', $roleSlug)->first();
+
+        if ($role) {
+            $user->roles()->sync([$role->id]);
+        }
+    }
+
+    private function ensureAgentWallet(User $user): void
+    {
+        if (!Schema::hasTable('wallets')) {
+            return;
+        }
+
+        if (!$this->hasRole($user, 'agent')) {
+            return;
+        }
+
+        Wallet::firstOrCreate(
+            ['user_id' => $user->id],
+            [
+                'balance' => 0,
+                'currency' => 'RWF',
+                'status' => 'active',
+            ]
+        );
+    }
+
+    private function sendAccountSetupEmail(User $user): bool
+    {
+        if (empty($user->email)) {
+            return false;
+        }
+
+        $token = Password::broker()->createToken($user);
+
+        $user->notify(new AccountSetupNotification($token, $user->email));
+
+        return true;
+    }
+
+    private function formatAgent(User $agent): array
+    {
+        $agent->loadMissing([
+            'roles:id,name,slug',
+            'agentProfile:id,user_id,image,commission_percentage,created_by',
+        ]);
+
+        $wallet = Wallet::where('user_id', $agent->id)->first();
+
+        return [
+            'id' => $agent->id,
+            'name' => $agent->name,
+            'email' => $agent->email,
+            'phone' => $agent->phone,
+            'status' => $agent->status,
+            'is_active' => (bool) $agent->is_active,
+            'created_at' => optional($agent->created_at)->format('Y-m-d H:i:s'),
+            'updated_at' => optional($agent->updated_at)->format('Y-m-d H:i:s'),
+            'role' => [
+                'slug' => 'agent',
+                'name' => 'Agent',
+            ],
+            'profile' => [
+                'image' => optional($agent->agentProfile)->image,
+                'image_url' => optional($agent->agentProfile)->image_url,
+                'commission_percentage' => (float) optional($agent->agentProfile)->commission_percentage,
+            ],
+            'wallet' => [
+                'balance' => $wallet ? (float) $wallet->balance : 0,
+                'currency' => $wallet ? $wallet->currency : 'RWF',
+                'status' => $wallet ? $wallet->status : 'active',
+            ],
+        ];
+    }
+}

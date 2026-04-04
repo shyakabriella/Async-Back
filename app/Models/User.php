@@ -5,9 +5,11 @@ namespace App\Models;
 use App\Models\Role;
 use App\Models\Program;
 use App\Models\Wallet;
+use App\Models\AgentProfile;
 use App\Models\AgentPresence;
 use App\Models\ChatConversation;
 use App\Models\TrainerAttendance;
+use App\Models\AgentStudentReferral;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
@@ -88,5 +90,29 @@ class User extends Authenticatable
     public function assignedConversations()
     {
         return $this->hasMany(ChatConversation::class, 'assigned_agent_id');
+    }
+
+    /**
+     * Agent profile details
+     */
+    public function agentProfile()
+    {
+        return $this->hasOne(AgentProfile::class);
+    }
+
+    /**
+     * Students/referrals brought by this agent
+     */
+    public function agentReferrals()
+    {
+        return $this->hasMany(AgentStudentReferral::class, 'agent_user_id');
+    }
+
+    /**
+     * If this user is a student referred by an agent
+     */
+    public function referredByAgent()
+    {
+        return $this->hasOne(AgentStudentReferral::class, 'student_user_id');
     }
 }

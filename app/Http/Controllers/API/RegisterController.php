@@ -305,10 +305,7 @@ class RegisterController extends BaseController
      */
     public function index(Request $request): JsonResponse
     {
-        $query = User::with([
-            'roles:id,name,slug',
-            'programs:id,name,slug,category,duration,start_date,end_date',
-        ])->latest();
+        $query = User::with($this->buildUserRelations())->latest();
 
         if ($request->filled('search')) {
             $search = trim((string) $request->search);
@@ -365,7 +362,7 @@ class RegisterController extends BaseController
                 'phone'         => 'nullable|string|max:20|unique:users,phone',
                 'status'        => ['nullable', Rule::in(['active', 'inactive', 'suspended'])],
                 'is_active'     => 'nullable|boolean',
-                'role_slug'     => ['nullable', 'string', Rule::in(['admin', 'ceo', 'trainer', 'student'])],
+                'role_slug'     => ['nullable', 'string', Rule::in(['admin', 'ceo', 'trainer', 'student', 'agent', 'school_owner'])],
                 'program_ids'   => 'nullable|array',
                 'program_ids.*' => 'integer|exists:programs,id',
                 'daily_rate'    => 'nullable|numeric|min:0',
@@ -439,10 +436,7 @@ class RegisterController extends BaseController
      */
     public function show(string $id): JsonResponse
     {
-        $user = User::with([
-            'roles:id,name,slug',
-            'programs:id,name,slug,category,duration,start_date,end_date',
-        ])->find($id);
+        $user = User::with($this->buildUserRelations())->find($id);
 
         if (!$user) {
             return response()->json([
@@ -465,10 +459,7 @@ class RegisterController extends BaseController
      */
     public function update(Request $request, string $id): JsonResponse
     {
-        $user = User::with([
-            'roles:id,name,slug',
-            'programs:id,name,slug,category,duration,start_date,end_date',
-        ])->find($id);
+        $user = User::with($this->buildUserRelations())->find($id);
 
         if (!$user) {
             return response()->json([
@@ -496,7 +487,7 @@ class RegisterController extends BaseController
                 'password' => 'nullable|string|min:8',
                 'status' => ['nullable', Rule::in(['active', 'inactive', 'suspended'])],
                 'is_active' => 'nullable|boolean',
-                'role_slug' => ['nullable', 'string', Rule::in(['admin', 'ceo', 'trainer', 'student'])],
+                'role_slug' => ['nullable', 'string', Rule::in(['admin', 'ceo', 'trainer', 'student', 'agent', 'school_owner'])],
                 'program_ids' => 'nullable|array',
                 'program_ids.*' => 'integer|exists:programs,id',
                 'daily_rate' => 'nullable|numeric|min:0',
@@ -660,6 +651,8 @@ class RegisterController extends BaseController
                 ['id' => 2, 'name' => 'CEO', 'slug' => 'ceo'],
                 ['id' => 3, 'name' => 'Trainer', 'slug' => 'trainer'],
                 ['id' => 4, 'name' => 'Student', 'slug' => 'student'],
+                ['id' => 5, 'name' => 'Agent', 'slug' => 'agent'],
+                ['id' => 6, 'name' => 'School Owner', 'slug' => 'school_owner'],
             ]),
         ], 200);
     }
@@ -844,14 +837,34 @@ class RegisterController extends BaseController
      */
     private function loadUserRelations(User $user): void
     {
-        $user->load([
-            'roles:id,name,slug',
-            'programs:id,name,slug,category,duration,start_date,end_date',
-        ]);
+        $user->load($this->buildUserRelations());
     }
 
     /**
-     * Ensure wallet exists for trainer
+     * Build user relationships safely
+     */
+    private function buildUserRelations(): array
+    {
+        $relations = [
+            'roles:id,name,slug',
+            'programs:id,name,slug,category,duration,start_date,end_date',
+        ];
+
+        if (Schema::hasTable('agent_profiles')) {
+            $relations[] = 'agentProfile:id,user_id,image,commission_percentage,created_by';
+        }
+
+        if (Schema::hasTable('agent_student_referrals')) {
+            $relations[] = 'referredByAgent:id,agent_user_id,student_user_id,program_id,amount_paid,commission_percentage,commission_amount,currency,status,registered_at';
+            $relations[] = 'referredByAgent.agent:id,name,email,phone';
+            $relations[] = 'referredByAgent.program:id,name,slug';
+        }
+
+        return $relations;
+    }
+
+    /**
+     * Ensure wallet exists for trainer or agent
      */
     private function ensureTrainerWallet(User $user): void
     {
@@ -861,11 +874,11 @@ class RegisterController extends BaseController
 
         $this->loadUserRelations($user);
 
-        $isTrainer = $user->roles->contains(function ($role) {
-            return (string) $role->slug === 'trainer';
+        $needsWallet = $user->roles->contains(function ($role) {
+            return in_array((string) $role->slug, ['trainer', 'agent'], true);
         });
 
-        if (!$isTrainer) {
+        if (!$needsWallet) {
             return;
         }
 
@@ -903,6 +916,37 @@ class RegisterController extends BaseController
             }
         }
 
+        $agentProfile = null;
+        if (Schema::hasTable('agent_profiles') && $user->relationLoaded('agentProfile') && $user->agentProfile) {
+            $agentProfile = [
+                'image' => $user->agentProfile->image,
+                'image_url' => $user->agentProfile->image_url ?? null,
+                'commission_percentage' => (float) $user->agentProfile->commission_percentage,
+            ];
+        }
+
+        $referredByAgent = null;
+        if (Schema::hasTable('agent_student_referrals') && $user->relationLoaded('referredByAgent') && $user->referredByAgent) {
+            $referredByAgent = [
+                'referral_id' => $user->referredByAgent->id,
+                'agent_user_id' => $user->referredByAgent->agent_user_id,
+                'agent_name' => optional($user->referredByAgent->agent)->name,
+                'agent_email' => optional($user->referredByAgent->agent)->email,
+                'agent_phone' => optional($user->referredByAgent->agent)->phone,
+                'program' => $user->referredByAgent->program ? [
+                    'id' => $user->referredByAgent->program->id,
+                    'name' => $user->referredByAgent->program->name,
+                    'slug' => $user->referredByAgent->program->slug,
+                ] : null,
+                'amount_paid' => (float) $user->referredByAgent->amount_paid,
+                'commission_percentage' => (float) $user->referredByAgent->commission_percentage,
+                'commission_amount' => (float) $user->referredByAgent->commission_amount,
+                'currency' => $user->referredByAgent->currency,
+                'status' => $user->referredByAgent->status,
+                'registered_at' => optional($user->referredByAgent->registered_at)?->format('Y-m-d H:i:s'),
+            ];
+        }
+
         return [
             'id'            => $user->id,
             'name'          => $user->name,
@@ -936,6 +980,8 @@ class RegisterController extends BaseController
                 ];
             })->values(),
             'wallet' => $walletData,
+            'agent_profile' => $agentProfile,
+            'referred_by_agent' => $referredByAgent,
         ];
     }
 
@@ -948,7 +994,7 @@ class RegisterController extends BaseController
             return null;
         }
 
-        $preferredOrder = ['ceo', 'admin', 'trainer', 'student'];
+        $preferredOrder = ['ceo', 'admin', 'school_owner', 'agent', 'trainer', 'student'];
 
         foreach ($preferredOrder as $slug) {
             $role = $roles->firstWhere('slug', $slug);

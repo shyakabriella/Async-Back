@@ -37,6 +37,18 @@ class RoleSeeder extends Seeder
                 'description' => 'Trainer Account',
                 'is_active' => true,
             ],
+            [
+                'name' => 'Agent',
+                'slug' => 'agent',
+                'description' => 'Agent Account',
+                'is_active' => true,
+            ],
+            [
+                'name' => 'School Owner',
+                'slug' => 'school_owner',
+                'description' => 'School Owner Account',
+                'is_active' => true,
+            ],
         ];
 
         foreach ($roles as $role) {

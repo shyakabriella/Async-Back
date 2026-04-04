@@ -1,6 +1,7 @@
 <?php
 
 use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\API\AgentController;
 use App\Http\Controllers\API\RegisterController;
 use App\Http\Controllers\API\ProgramController;
 use App\Http\Controllers\API\SupportChatController;
@@ -106,6 +107,24 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('users-program-options', 'programOptions');
         Route::get('programs/{program}/users', 'programUsers');
         Route::post('programs/{program}/users/sync', 'syncProgramUsers');
+    });
+
+    /*
+    |--------------------------------------------------------------------------
+    | Agent management routes
+    |--------------------------------------------------------------------------
+    */
+    Route::prefix('agents')->controller(AgentController::class)->group(function () {
+        // Admin / CEO
+        Route::get('/', 'index');
+        Route::post('/', 'store');
+        Route::get('/{id}', 'show');
+        Route::put('/{id}', 'update');
+        Route::patch('/{id}', 'update');
+
+        // Agent own box / dashboard
+        Route::get('/me/dashboard', 'myDashboard');
+        Route::post('/students/register', 'registerStudent');
     });
 
     /*
