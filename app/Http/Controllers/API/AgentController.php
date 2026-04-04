@@ -346,6 +346,163 @@ class AgentController extends BaseController
         ], 200);
     }
 
+
+    /**
+     * Admin / CEO: update one agent student action
+     * Paid => approved by default and commission counted
+     * Not Paid => waiting state, expected commission only
+     * Quit => no payment and no commission
+     */
+    public function updateStudentAction(Request $request, string $id, string $referralId): JsonResponse
+    {
+        $authUser = $request->user();
+
+        if (!$this->isAdminish($authUser)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Only admin or CEO can update agent student actions.',
+            ], 403);
+        }
+
+        $validator = Validator::make($request->all(), [
+            'action' => ['required', Rule::in(['paid', 'not_paid', 'quit'])],
+        ]);
+
+        if ($validator->fails()) {
+            return $this->sendError('Validation Error.', $validator->errors(), 422);
+        }
+
+        $agent = User::with([
+            'roles:id,name,slug',
+            'agentProfile:id,user_id,image,commission_percentage,created_by',
+        ])->find($id);
+
+        if (!$agent) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Agent not found.',
+            ], 404);
+        }
+
+        if (!$this->hasRole($agent, 'agent')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'The selected user is not an agent.',
+            ], 422);
+        }
+
+        $referral = AgentStudentReferral::with([
+            'student:id,name,email,phone,status,is_active,created_at',
+            $this->programRelationSelect(),
+        ])
+            ->where('agent_user_id', $agent->id)
+            ->where('id', $referralId)
+            ->first();
+
+        if (!$referral) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Agent student referral not found.',
+            ], 404);
+        }
+
+        $action = strtolower(trim((string) $request->input('action')));
+        $agent->loadMissing('agentProfile:id,user_id,commission_percentage');
+
+        $programPrice = $this->resolveProgramPrice($referral->program);
+        $commissionPercentage = max(
+            0,
+            min(100, (float) ($referral->commission_percentage ?: optional($agent->agentProfile)->commission_percentage))
+        );
+
+        DB::beginTransaction();
+
+        try {
+            if ($action === 'paid') {
+                $referral->status = 'paid';
+                $referral->amount_paid = round(max($programPrice, (float) $referral->amount_paid), 2);
+                $referral->commission_percentage = $commissionPercentage;
+                $referral->commission_amount = $this->calculateCommissionAmount(
+                    (float) $referral->amount_paid,
+                    $commissionPercentage
+                );
+                $referral->currency = 'RWF';
+
+                if ($referral->student) {
+                    $referral->student->status = 'active';
+                    $referral->student->is_active = true;
+                    $referral->student->save();
+                }
+            } elseif ($action === 'not_paid') {
+                $referral->status = 'not_paid';
+                $referral->amount_paid = round(max($programPrice, (float) $referral->amount_paid), 2);
+                $referral->commission_percentage = $commissionPercentage;
+                $referral->commission_amount = $this->calculateCommissionAmount(
+                    (float) $referral->amount_paid,
+                    $commissionPercentage
+                );
+                $referral->currency = 'RWF';
+
+                if ($referral->student) {
+                    $referral->student->status = 'active';
+                    $referral->student->is_active = true;
+                    $referral->student->save();
+                }
+            } else {
+                $referral->status = 'quit';
+                $referral->amount_paid = 0;
+                $referral->commission_percentage = $commissionPercentage;
+                $referral->commission_amount = 0;
+                $referral->currency = 'RWF';
+
+                if ($referral->student) {
+                    $referral->student->status = 'inactive';
+                    $referral->student->is_active = false;
+                    $referral->student->save();
+                }
+            }
+
+            $referral->save();
+
+            $totals = $this->syncAgentFinancials($agent);
+
+            DB::commit();
+
+            $referral->refresh()->load([
+                'student:id,name,email,phone,status,is_active,created_at',
+                $this->programRelationSelect(),
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Student action updated successfully.',
+                'data' => [
+                    'agent' => $this->formatAgent($agent->fresh([
+                        'roles:id,name,slug',
+                        'agentProfile:id,user_id,image,commission_percentage,created_by',
+                    ])),
+                    'stats' => $totals,
+                    'referral' => $this->formatReferralRow($referral),
+                ],
+            ], 200);
+        } catch (\Throwable $e) {
+            DB::rollBack();
+
+            Log::error('Failed to update agent student action.', [
+                'agent_id' => $agent->id,
+                'referral_id' => $referralId,
+                'action' => $action,
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to update student action.',
+                'error' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
     /**
      * Admin / CEO: update one agent
      */
@@ -546,7 +703,7 @@ class AgentController extends BaseController
                 'email' => 'nullable|email|max:255|unique:users,email|required_without:phone',
                 'phone' => 'nullable|string|max:20|unique:users,phone|required_without:email',
                 'program_id' => 'required|integer|exists:programs,id',
-                'status' => ['nullable', Rule::in(['pending', 'approved', 'paid', 'rejected'])],
+                'status' => ['nullable', Rule::in(['not_paid', 'pending', 'approved', 'paid', 'quit', 'rejected'])],
                 'commission_percentage' => 'nullable|numeric|min:0|max:100',
                 'notes' => 'nullable|string|max:5000',
             ],
@@ -576,8 +733,8 @@ class AgentController extends BaseController
         $studentAccountStatus = 'active';
         $studentIsActive = true;
 
-        // referral must remain pending until approval
-        $referralStatus = 'pending';
+        // default workflow after agent registration
+        $referralStatus = 'not_paid';
 
         DB::beginTransaction();
 
@@ -643,7 +800,7 @@ class AgentController extends BaseController
 
             return response()->json([
                 'success' => true,
-                'message' => 'Student registered under agent successfully.',
+                'message' => 'Student registered under agent successfully with not paid status.',
                 'data' => [
                     'student' => [
                         'id' => $student->id,
@@ -830,7 +987,7 @@ class AgentController extends BaseController
 
     private function isPendingReferralStatus(?string $status): bool
     {
-        return strtolower(trim((string) $status)) === 'pending';
+        return in_array(strtolower(trim((string) $status)), ['pending', 'not_paid'], true);
     }
 
     private function syncAgentFinancials(User $agent): array
@@ -857,19 +1014,24 @@ class AgentController extends BaseController
 
         foreach ($referrals as $referral) {
             $programPrice = $this->resolveProgramPrice($referral->program);
-            $amountPaid = $programPrice > 0
-                ? $programPrice
-                : (float) ($referral->amount_paid ?? 0);
-
-            $amountPaid = round(max(0, $amountPaid), 2);
-            $commissionAmount = $this->calculateCommissionAmount($amountPaid, $commissionPercentage);
-
             $currentStatus = strtolower(trim((string) $referral->status));
 
-            if (in_array($currentStatus, ['approved', 'paid', 'pending', 'rejected'], true)) {
+            if (in_array($currentStatus, ['approved', 'paid', 'pending', 'not_paid', 'quit', 'rejected'], true)) {
                 $status = $currentStatus;
             } else {
-                $status = 'pending';
+                $status = 'not_paid';
+            }
+
+            if (in_array($status, ['quit', 'rejected'], true)) {
+                $amountPaid = 0;
+                $commissionAmount = 0;
+            } else {
+                $amountPaid = $programPrice > 0
+                    ? $programPrice
+                    : (float) ($referral->amount_paid ?? 0);
+
+                $amountPaid = round(max(0, $amountPaid), 2);
+                $commissionAmount = $this->calculateCommissionAmount($amountPaid, $commissionPercentage);
             }
 
             $dirty = false;

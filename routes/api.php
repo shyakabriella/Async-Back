@@ -141,6 +141,7 @@ Route::middleware('auth:sanctum')->group(function () {
         // NEW: selected agent detail dashboard with registered students
         Route::get('{id}/dashboard', 'detailDashboard');
         Route::get('{id}/students', 'students');
+        Route::patch('{id}/students/{referralId}/action', 'updateStudentAction');
 
         Route::get('{id}', 'show');
         Route::put('{id}', 'update');
