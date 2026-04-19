@@ -9,6 +9,7 @@ use App\Http\Controllers\API\AttendanceController;
 use App\Http\Controllers\API\TrainerAttendanceController;
 use App\Http\Controllers\API\TrainingProgramController;
 use App\Http\Controllers\API\ProgramApplicationController;
+use App\Http\Controllers\API\PetCashRequestController;
 
 /*
 |--------------------------------------------------------------------------
@@ -155,6 +156,22 @@ Route::middleware('auth:sanctum')->group(function () {
     */
     Route::apiResource('programs', ProgramController::class)->except(['index', 'show']);
     Route::apiResource('training-programs', TrainingProgramController::class)->except(['index', 'show']);
+
+    /*
+    |--------------------------------------------------------------------------
+    | Pet cash request routes
+    |--------------------------------------------------------------------------
+    */
+    Route::prefix('pet-cash-requests')->controller(PetCashRequestController::class)->group(function () {
+        Route::get('/', 'index');
+        Route::post('/', 'store');
+        Route::get('{id}', 'show');
+        Route::put('{id}', 'update');
+        Route::patch('{id}', 'update');
+        Route::delete('{id}', 'destroy');
+        Route::post('{id}/approve', 'approve');
+        Route::post('{id}/reject', 'reject');
+    });
 
     /*
     |--------------------------------------------------------------------------

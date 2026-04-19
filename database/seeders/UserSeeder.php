@@ -18,7 +18,7 @@ class UserSeeder extends Seeder
         $users = [
             [
                 'name' => 'System Admin',
-                'email' => 'admin@asyncafrica.com',
+                'email' => 'shyakas83@gmail.com',
                 'phone' => '0782667888',
                 'password' => 'password123',
                 'status' => 'active',
@@ -27,7 +27,7 @@ class UserSeeder extends Seeder
             ],
             [
                 'name' => 'ASYNC CEO',
-                'email' => 'ceo@asyncafrica.com',
+                'email' => 'nsanzumuhirecyprien0@gmail.com',
                 'phone' => '0788325348',
                 'password' => 'password123',
                 'status' => 'active',
