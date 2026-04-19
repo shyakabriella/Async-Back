@@ -5,14 +5,16 @@ namespace App\Http\Controllers\API;
 use App\Http\Controllers\Controller;
 use App\Models\Program;
 use App\Models\ProgramApplication;
+use App\Notifications\ApplicationApprovedNotification;
+use App\Notifications\ApplicationReceivedNotification;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Validator;
-use Illuminate\Support\Str;
-use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
-class ProgramController extends Controller
+class ProgramApplicationController extends Controller
 {
     private ?array $programTableColumns = null;
 
