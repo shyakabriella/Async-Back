@@ -4,6 +4,7 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\API\AgentController;
 use App\Http\Controllers\API\RegisterController;
 use App\Http\Controllers\API\ProgramController;
+use App\Http\Controllers\API\IntakeController;
 use App\Http\Controllers\API\SupportChatController;
 use App\Http\Controllers\API\AttendanceController;
 use App\Http\Controllers\API\TrainerAttendanceController;
@@ -20,7 +21,6 @@ Route::controller(RegisterController::class)->group(function () {
     Route::post('register', 'register');
     Route::post('login', 'login');
 
-    // Password reset / account setup
     Route::post('forgot-password', 'forgotPassword');
     Route::post('reset-password', 'resetPassword');
 });
@@ -44,6 +44,7 @@ Route::get('programs-test', function () {
 */
 Route::apiResource('programs', ProgramController::class)->only(['index', 'show']);
 Route::apiResource('training-programs', TrainingProgramController::class)->only(['index', 'show']);
+Route::apiResource('intakes', IntakeController::class)->only(['index', 'show']);
 
 /*
 |--------------------------------------------------------------------------
@@ -78,20 +79,10 @@ Route::prefix('support-chat')->group(function () {
 */
 Route::middleware('auth:sanctum')->group(function () {
 
-    /*
-    |--------------------------------------------------------------------------
-    | Authenticated account routes
-    |--------------------------------------------------------------------------
-    */
     Route::controller(RegisterController::class)->group(function () {
         Route::get('me', 'me');
         Route::post('logout', 'logout');
 
-        /*
-        |--------------------------------------------------------------------------
-        | User management routes
-        |--------------------------------------------------------------------------
-        */
         Route::get('users', 'index');
         Route::post('users', 'store');
         Route::get('users/{id}', 'show');
@@ -100,46 +91,20 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('users/{id}', 'destroy');
         Route::post('users/{id}/toggle-status', 'toggleStatus');
 
-        /*
-        |--------------------------------------------------------------------------
-        | Helper option routes
-        |--------------------------------------------------------------------------
-        */
         Route::get('roles', 'roles');
         Route::get('users-program-options', 'programOptions');
         Route::get('programs/{program}/users', 'programUsers');
         Route::post('programs/{program}/users/sync', 'syncProgramUsers');
     });
 
-    /*
-    |--------------------------------------------------------------------------
-    | Agent management routes
-    |--------------------------------------------------------------------------
-    */
     Route::prefix('agents')->controller(AgentController::class)->group(function () {
-        /*
-        |--------------------------------------------------------------------------
-        | Agent own dashboard / student registration
-        |--------------------------------------------------------------------------
-        | Keep these before /{id} so route matching stays correct.
-        */
         Route::get('me/dashboard', 'myDashboard');
-
-        // Main route used by updated Addintern page
         Route::post('register-student', 'registerStudent');
-
-        // Backward-compatible alias for older frontend pages
         Route::post('students/register', 'registerStudent');
 
-        /*
-        |--------------------------------------------------------------------------
-        | Admin / CEO agent management
-        |--------------------------------------------------------------------------
-        */
         Route::get('/', 'index');
         Route::post('/', 'store');
 
-        // NEW: selected agent detail dashboard with registered students
         Route::get('{id}/dashboard', 'detailDashboard');
         Route::get('{id}/students', 'students');
         Route::patch('{id}/students/{referralId}/action', 'updateStudentAction');
@@ -149,19 +114,10 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('{id}', 'update');
     });
 
-    /*
-    |--------------------------------------------------------------------------
-    | Protected program routes
-    |--------------------------------------------------------------------------
-    */
+    Route::apiResource('intakes', IntakeController::class)->except(['index', 'show']);
     Route::apiResource('programs', ProgramController::class)->except(['index', 'show']);
     Route::apiResource('training-programs', TrainingProgramController::class)->except(['index', 'show']);
 
-    /*
-    |--------------------------------------------------------------------------
-    | Pet cash request routes
-    |--------------------------------------------------------------------------
-    */
     Route::prefix('pet-cash-requests')->controller(PetCashRequestController::class)->group(function () {
         Route::get('/', 'index');
         Route::post('/', 'store');
@@ -173,39 +129,19 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('{id}/reject', 'reject');
     });
 
-    /*
-    |--------------------------------------------------------------------------
-    | Protected curriculum routes
-    |--------------------------------------------------------------------------
-    */
     Route::post('programs/{program}/curriculum', [ProgramController::class, 'curriculumStore']);
     Route::put('programs/{program}/curriculum/{curriculumId}', [ProgramController::class, 'curriculumUpdate']);
     Route::patch('programs/{program}/curriculum/{curriculumId}', [ProgramController::class, 'curriculumUpdate']);
     Route::delete('programs/{program}/curriculum/{curriculumId}', [ProgramController::class, 'curriculumDestroy']);
 
-    /*
-    |--------------------------------------------------------------------------
-    | Protected application management
-    |--------------------------------------------------------------------------
-    */
     Route::get('applications', [ProgramApplicationController::class, 'index']);
     Route::get('applications/{id}', [ProgramApplicationController::class, 'show']);
     Route::put('applications/{id}', [ProgramApplicationController::class, 'update']);
     Route::patch('applications/{id}', [ProgramApplicationController::class, 'update']);
     Route::delete('applications/{id}', [ProgramApplicationController::class, 'destroy']);
 
-    /*
-    |--------------------------------------------------------------------------
-    | Student/Trainee attendance routes
-    |--------------------------------------------------------------------------
-    */
     Route::apiResource('attendances', AttendanceController::class);
 
-    /*
-    |--------------------------------------------------------------------------
-    | Trainer attendance routes
-    |--------------------------------------------------------------------------
-    */
     Route::get('trainer-attendances', [TrainerAttendanceController::class, 'index']);
     Route::post('trainer-attendances', [TrainerAttendanceController::class, 'store']);
     Route::get('trainer-attendances/{id}', [TrainerAttendanceController::class, 'show']);
@@ -214,11 +150,6 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::delete('trainer-attendances/{id}', [TrainerAttendanceController::class, 'destroy']);
     Route::post('trainer-attendances/{id}/pay', [TrainerAttendanceController::class, 'pay']);
 
-    /*
-    |--------------------------------------------------------------------------
-    | Protected support chat routes for agents/admin
-    |--------------------------------------------------------------------------
-    */
     Route::prefix('support-chat/agent')->group(function () {
         Route::get('conversations', [SupportChatController::class, 'agentConversations']);
         Route::get('conversations/{id}', [SupportChatController::class, 'agentShowConversation']);

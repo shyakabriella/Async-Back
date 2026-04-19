@@ -18,7 +18,10 @@ class ProgramController extends Controller
 
     public function index()
     {
-        $programs = Program::with('users:id,name,email,phone')
+        $programs = Program::with([
+            'users:id,name,email,phone',
+            'intake:id,name,description,is_active',
+        ])
             ->latest()
             ->get()
             ->map(function ($program) {
@@ -63,7 +66,10 @@ class ProgramController extends Controller
             $program->users()->sync($request->input('user_ids', []));
         }
 
-        $program->load('users:id,name,email,phone');
+        $program->load([
+            'users:id,name,email,phone',
+            'intake:id,name,description,is_active',
+        ]);
 
         return response()->json([
             'success' => true,
@@ -74,7 +80,10 @@ class ProgramController extends Controller
 
     public function show(string $id)
     {
-        $program = Program::with('users:id,name,email,phone')->find($id);
+        $program = Program::with([
+            'users:id,name,email,phone',
+            'intake:id,name,description,is_active',
+        ])->find($id);
 
         if (!$program) {
             return response()->json([
@@ -92,7 +101,10 @@ class ProgramController extends Controller
 
     public function update(Request $request, string $id)
     {
-        $program = Program::with('users:id,name,email,phone')->find($id);
+        $program = Program::with([
+            'users:id,name,email,phone',
+            'intake:id,name,description,is_active',
+        ])->find($id);
 
         if (!$program) {
             return response()->json([
@@ -131,7 +143,10 @@ class ProgramController extends Controller
             $program->users()->sync($request->input('user_ids', []));
         }
 
-        $program->refresh()->load('users:id,name,email,phone');
+        $program->refresh()->load([
+            'users:id,name,email,phone',
+            'intake:id,name,description,is_active',
+        ]);
 
         return response()->json([
             'success' => true,
@@ -386,6 +401,7 @@ class ProgramController extends Controller
     private function storeValidationRules(): array
     {
         return [
+            'intake_id' => 'nullable|exists:intakes,id',
             'slug' => 'nullable|string|max:255',
             'name' => 'nullable|string|max:255',
             'badge' => 'nullable|string|max:255',
@@ -438,6 +454,7 @@ class ProgramController extends Controller
     private function updateValidationRules(): array
     {
         return [
+            'intake_id' => 'nullable|exists:intakes,id',
             'slug' => 'nullable|string|max:255',
             'name' => 'nullable|string|max:255',
             'badge' => 'nullable|string|max:255',
@@ -539,6 +556,7 @@ class ProgramController extends Controller
 
         $payload = [];
 
+        $this->setProgramColumnValue($payload, 'intake_id', $data['intake_id'] ?? null);
         $this->setProgramColumnValue($payload, 'code', $this->generateProgramCode($name));
         $this->setProgramColumnValue($payload, 'slug', $data['slug'] ?? null);
         $this->setProgramColumnValue($payload, 'name', $name);
@@ -587,6 +605,11 @@ class ProgramController extends Controller
 
         $payload = [];
 
+        $this->setProgramColumnValue(
+            $payload,
+            'intake_id',
+            array_key_exists('intake_id', $data) ? $data['intake_id'] : $program->intake_id
+        );
         $this->setProgramColumnValue($payload, 'slug', array_key_exists('slug', $data) ? $data['slug'] : $program->slug);
         $this->setProgramColumnValue($payload, 'name', $name);
         $this->setProgramColumnValue($payload, 'badge', array_key_exists('badge', $data) ? $data['badge'] : $program->badge);
@@ -1025,6 +1048,15 @@ class ProgramController extends Controller
         $data['users_count'] = $program->relationLoaded('users')
             ? $program->users->count()
             : 0;
+
+        $data['intake'] = $program->relationLoaded('intake') && $program->intake
+            ? [
+                'id' => $program->intake->id,
+                'name' => $program->intake->name,
+                'description' => $program->intake->description,
+                'is_active' => (bool) $program->intake->is_active,
+            ]
+            : null;
 
         return $data;
     }

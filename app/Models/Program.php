@@ -4,12 +4,16 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Program extends Model
 {
     use HasFactory;
 
     protected $fillable = [
+        'intake_id',
         'code',
         'name',
         'slug',
@@ -41,6 +45,7 @@ class Program extends Model
     ];
 
     protected $casts = [
+        'intake_id' => 'integer',
         'students' => 'integer',
         'price' => 'decimal:2',
         'start_date' => 'date:Y-m-d',
@@ -111,27 +116,36 @@ class Program extends Model
         $this->attributes['end_date'] = $value ?: null;
     }
 
-    public function skillItems()
+    public function intake(): BelongsTo
     {
-        return $this->hasMany(TrainingProgramSkill::class, 'program_id')->orderBy('sort_order');
+        return $this->belongsTo(Intake::class);
     }
 
-    public function outcomeItems()
+    public function skillItems(): HasMany
     {
-        return $this->hasMany(TrainingProgramOutcome::class, 'program_id')->orderBy('sort_order');
+        return $this->hasMany(TrainingProgramSkill::class, 'program_id')
+            ->orderBy('sort_order');
     }
 
-    public function toolItems()
+    public function outcomeItems(): HasMany
     {
-        return $this->hasMany(TrainingProgramTool::class, 'program_id')->orderBy('sort_order');
+        return $this->hasMany(TrainingProgramOutcome::class, 'program_id')
+            ->orderBy('sort_order');
     }
 
-    public function applications()
+    public function toolItems(): HasMany
     {
-        return $this->hasMany(ProgramApplication::class, 'program_id')->latest();
+        return $this->hasMany(TrainingProgramTool::class, 'program_id')
+            ->orderBy('sort_order');
     }
 
-    public function users()
+    public function applications(): HasMany
+    {
+        return $this->hasMany(ProgramApplication::class, 'program_id')
+            ->latest();
+    }
+
+    public function users(): BelongsToMany
     {
         return $this->belongsToMany(User::class, 'program_user')
             ->withTimestamps();
