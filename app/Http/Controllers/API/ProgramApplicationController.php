@@ -217,7 +217,6 @@ class ProgramApplicationController extends Controller
                     ->lockForUpdate()
                     ->firstOrFail();
 
-                // Make sure shift availability is current before booking
                 $this->syncProgramShiftAvailability($program);
 
                 $program->refresh();
@@ -275,6 +274,7 @@ class ProgramApplicationController extends Controller
                         : true,
 
                     'status' => 'Pending',
+                    'admin_note' => null,
                     'submitted_at' => $request->input('submitted_at', now()),
                     'meta' => [
                         'ip_address' => $request->ip(),
@@ -328,7 +328,7 @@ class ProgramApplicationController extends Controller
     }
 
     /**
-     * Update application status/admin note.
+     * Update the specified application fully.
      */
     public function update(Request $request, string $id)
     {
@@ -341,10 +341,139 @@ class ProgramApplicationController extends Controller
             ], 404);
         }
 
-        $validator = Validator::make($request->all(), [
-            'status' => 'nullable|in:Pending,Reviewed,Accepted,Rejected,Waitlisted',
-            'admin_note' => 'nullable|string|max:5000',
-        ]);
+        $validator = Validator::make(
+            $request->all(),
+            [
+                'auth_provider' => 'nullable|string|max:50',
+
+                'program_id' => 'nullable|exists:programs,id',
+                'shift_id' => 'nullable|string|max:255',
+                'experience_level' => 'nullable|string|max:255',
+
+                'selected_skills' => 'nullable|array',
+                'selected_skills.*' => 'nullable|string|max:255',
+
+                'selected_tools' => 'nullable|array',
+                'selected_tools.*' => 'nullable|string|max:255',
+
+                'applicant.first_name' => 'nullable|string|min:2|max:255',
+                'applicant.last_name' => 'nullable|string|min:2|max:255',
+                'applicant.email' => 'nullable|email:rfc|max:255',
+                'applicant.phone' => ['nullable', 'string', 'min:8', 'max:25', 'regex:/^[0-9+\-\s\(\)]+$/'],
+                'applicant.country' => 'nullable|string|max:255',
+                'applicant.city' => 'nullable|string|max:255',
+                'applicant.date_of_birth' => 'nullable|date|before:today',
+                'applicant.gender' => 'nullable|string|max:255',
+
+                'background.education_level' => 'nullable|string|max:255',
+                'background.school_name' => 'nullable|string|max:255',
+                'background.field_of_study' => 'nullable|string|max:255',
+
+                'consents.agree_terms' => 'nullable|boolean',
+                'consents.agree_communication' => 'nullable|boolean',
+
+                'status' => 'nullable|in:Pending,Reviewed,Accepted,Rejected,Waitlisted',
+                'admin_note' => 'nullable|string|max:5000',
+                'submitted_at' => 'nullable|date',
+            ],
+            [
+                'applicant.phone.regex' => 'Phone number format is invalid.',
+                'applicant.date_of_birth.before' => 'Date of birth must be a date before today.',
+            ]
+        );
+
+        $validator->after(function ($validator) use ($request, $application) {
+            $final = $this->buildFinalUpdatePayload($request, $application);
+
+            $program = Program::find($final['program_id']);
+
+            if (!$program) {
+                return;
+            }
+
+            $allowedSkills = $this->normalizeOptionValues($program->skills ?? []);
+            $allowedTools = $this->normalizeOptionValues($program->tools ?? []);
+            $allowedExperienceLevels = $this->normalizeOptionValues($program->experience_levels ?? []);
+            $allowedShifts = $this->normalizeShifts($program->shifts ?? []);
+
+            if (!empty($final['shift_id'])) {
+                $matchedShift = collect($allowedShifts)->first(function ($shift) use ($final) {
+                    return (string) ($shift['id'] ?? '') === (string) $final['shift_id'];
+                });
+
+                if (!$matchedShift) {
+                    $validator->errors()->add(
+                        'shift_id',
+                        'Selected shift does not belong to this program.'
+                    );
+                }
+            }
+
+            if (is_array($final['selected_skills'])) {
+                foreach ($final['selected_skills'] as $index => $skill) {
+                    if (!in_array($skill, $allowedSkills, true)) {
+                        $validator->errors()->add(
+                            "selected_skills.$index",
+                            'Selected skill is not allowed for this program.'
+                        );
+                    }
+                }
+            }
+
+            if (is_array($final['selected_tools'])) {
+                foreach ($final['selected_tools'] as $index => $tool) {
+                    if (!in_array($tool, $allowedTools, true)) {
+                        $validator->errors()->add(
+                            "selected_tools.$index",
+                            'Selected tool is not allowed for this program.'
+                        );
+                    }
+                }
+            }
+
+            if (!empty($allowedExperienceLevels) && !empty($final['experience_level'])) {
+                if (!in_array($final['experience_level'], $allowedExperienceLevels, true)) {
+                    $validator->errors()->add(
+                        'experience_level',
+                        'Selected experience level is not allowed for this program.'
+                    );
+                }
+            }
+
+            $duplicates = $this->findDuplicateApplicantFields(
+                (int) $program->id,
+                $final['applicant']['email'],
+                $final['applicant']['phone'],
+                $final['applicant']['first_name'],
+                $final['applicant']['last_name'],
+                (int) $application->id
+            );
+
+            if ($duplicates['email']) {
+                $validator->errors()->add(
+                    'applicant.email',
+                    'This email has already been used to apply for this program.'
+                );
+            }
+
+            if ($duplicates['phone']) {
+                $validator->errors()->add(
+                    'applicant.phone',
+                    'This phone number has already been used to apply for this program.'
+                );
+            }
+
+            if ($duplicates['full_name']) {
+                $validator->errors()->add(
+                    'applicant.first_name',
+                    'An application with the same first name and last name already exists for this program.'
+                );
+                $validator->errors()->add(
+                    'applicant.last_name',
+                    'An application with the same first name and last name already exists for this program.'
+                );
+            }
+        });
 
         if ($validator->fails()) {
             return response()->json([
@@ -355,37 +484,130 @@ class ProgramApplicationController extends Controller
         }
 
         $oldStatus = $application->status;
+        $updatedApplication = null;
 
-        DB::transaction(function () use ($request, $application) {
-            $application->update([
-                'status' => $request->input('status', $application->status),
-                'admin_note' => $request->input('admin_note', $application->admin_note),
-            ]);
+        try {
+            DB::transaction(function () use ($request, $application, &$updatedApplication) {
+                $application = ProgramApplication::query()
+                    ->lockForUpdate()
+                    ->findOrFail($application->id);
 
-            if ($application->program_id) {
-                $program = Program::where('id', $application->program_id)
+                $oldProgramId = (int) $application->program_id;
+                $final = $this->buildFinalUpdatePayload($request, $application);
+
+                $targetProgram = Program::where('id', $final['program_id'])
                     ->lockForUpdate()
                     ->first();
 
-                if ($program) {
-                    $this->syncProgramShiftAvailability($program);
+                $oldProgram = null;
+
+                if ($oldProgramId && (!$targetProgram || $oldProgramId !== (int) $targetProgram->id)) {
+                    $oldProgram = Program::where('id', $oldProgramId)
+                        ->lockForUpdate()
+                        ->first();
                 }
-            }
-        });
 
-        $application = $application->fresh('program');
+                if ($oldProgram) {
+                    $this->syncProgramShiftAvailability($oldProgram);
+                }
 
-        if ($oldStatus !== 'Accepted' && $application->status === 'Accepted') {
+                if ($targetProgram) {
+                    $this->syncProgramShiftAvailability($targetProgram);
+                    $targetProgram->refresh();
+                }
+
+                $selectedShift = null;
+                $finalStatus = $final['status'];
+
+                if ($targetProgram && !empty($final['shift_id'])) {
+                    $shifts = $this->normalizeShifts($targetProgram->shifts ?? []);
+                    $selectedShift = collect($shifts)->first(function ($shift) use ($final) {
+                        return (string) ($shift['id'] ?? '') === (string) $final['shift_id'];
+                    });
+
+                    if (!$selectedShift) {
+                        throw ValidationException::withMessages([
+                            'shift_id' => ['Selected shift does not belong to this program.'],
+                        ]);
+                    }
+
+                    $currentOccupies = in_array($application->status, ['Pending', 'Reviewed', 'Accepted'], true);
+                    $finalOccupies = in_array($finalStatus, ['Pending', 'Reviewed', 'Accepted'], true);
+                    $sameProgram = (int) $targetProgram->id === (int) $application->program_id;
+                    $sameShift = (string) $final['shift_id'] === (string) $application->shift_id;
+                    $canKeepCurrentSlot = $sameProgram && $sameShift && $currentOccupies && $finalOccupies;
+
+                    if ($finalOccupies && !empty($selectedShift['is_full']) && !$canKeepCurrentSlot) {
+                        throw ValidationException::withMessages([
+                            'shift_id' => ['Selected shift is already full.'],
+                        ]);
+                    }
+                }
+
+                $application->update([
+                    'program_id' => $targetProgram?->id ?? $application->program_id,
+                    'program_title' => $targetProgram ? ($targetProgram->name ?? $targetProgram->title ?? null) : $application->program_title,
+                    'program_slug' => $targetProgram ? ($targetProgram->slug ?? null) : $application->program_slug,
+
+                    'shift_id' => $final['shift_id'] !== '' ? $final['shift_id'] : null,
+                    'shift_name' => $selectedShift['name'] ?? ($final['shift_id'] ? $application->shift_name : null),
+
+                    'experience_level' => $this->cleanValue($final['experience_level']),
+                    'selected_skills' => $this->normalizeStringArray($final['selected_skills']),
+                    'selected_tools' => $this->normalizeStringArray($final['selected_tools']),
+
+                    'auth_provider' => trim((string) ($final['auth_provider'] ?? 'manual')),
+
+                    'first_name' => $this->cleanValue($final['applicant']['first_name']),
+                    'last_name' => $this->cleanValue($final['applicant']['last_name']),
+                    'email' => $this->normalizeEmail($final['applicant']['email']),
+                    'phone' => $this->cleanPhoneForStorage($final['applicant']['phone']),
+                    'country' => $this->cleanValue($final['applicant']['country']),
+                    'city' => $this->cleanValue($final['applicant']['city']),
+                    'date_of_birth' => $final['applicant']['date_of_birth'] ?: null,
+                    'gender' => $this->cleanValue($final['applicant']['gender']),
+
+                    'education_level' => $this->cleanValue($final['background']['education_level']),
+                    'school_name' => $this->cleanValue($final['background']['school_name']),
+                    'field_of_study' => $this->cleanValue($final['background']['field_of_study']),
+
+                    'agree_terms' => (bool) $final['consents']['agree_terms'],
+                    'agree_communication' => (bool) $final['consents']['agree_communication'],
+
+                    'status' => $finalStatus,
+                    'admin_note' => $final['admin_note'] !== null ? trim((string) $final['admin_note']) : null,
+                    'submitted_at' => $final['submitted_at'] ?: $application->submitted_at,
+                ]);
+
+                if ($oldProgram) {
+                    $this->syncProgramShiftAvailability($oldProgram);
+                }
+
+                if ($targetProgram) {
+                    $this->syncProgramShiftAvailability($targetProgram);
+                }
+
+                $updatedApplication = $application->fresh('program');
+            });
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation error.',
+                'errors' => $e->errors(),
+            ], 422);
+        }
+
+        if ($oldStatus !== 'Accepted' && $updatedApplication->status === 'Accepted') {
             $this->sendNotificationSafely(
-                $application->email,
-                new ApplicationApprovedNotification($application)
+                $updatedApplication->email,
+                new ApplicationApprovedNotification($updatedApplication)
             );
         }
 
         return response()->json([
             'success' => true,
             'message' => 'Application updated successfully.',
-            'data' => $this->formatApplication($application),
+            'data' => $this->formatApplication($updatedApplication),
         ], 200);
     }
 
@@ -439,6 +661,98 @@ class ProgramApplicationController extends Controller
                 'error' => $e->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * Build final update payload by merging request data with current application.
+     */
+    private function buildFinalUpdatePayload(Request $request, ProgramApplication $application): array
+    {
+        return [
+            'auth_provider' => $request->exists('auth_provider')
+                ? $request->input('auth_provider')
+                : $application->auth_provider,
+
+            'program_id' => $request->exists('program_id')
+                ? (int) $request->input('program_id')
+                : (int) $application->program_id,
+
+            'shift_id' => $request->exists('shift_id')
+                ? $request->input('shift_id')
+                : $application->shift_id,
+
+            'experience_level' => $request->exists('experience_level')
+                ? $request->input('experience_level')
+                : $application->experience_level,
+
+            'selected_skills' => $request->exists('selected_skills')
+                ? $request->input('selected_skills', [])
+                : ($application->selected_skills ?? []),
+
+            'selected_tools' => $request->exists('selected_tools')
+                ? $request->input('selected_tools', [])
+                : ($application->selected_tools ?? []),
+
+            'applicant' => [
+                'first_name' => $request->exists('applicant.first_name')
+                    ? $request->input('applicant.first_name')
+                    : $application->first_name,
+                'last_name' => $request->exists('applicant.last_name')
+                    ? $request->input('applicant.last_name')
+                    : $application->last_name,
+                'email' => $request->exists('applicant.email')
+                    ? $request->input('applicant.email')
+                    : $application->email,
+                'phone' => $request->exists('applicant.phone')
+                    ? $request->input('applicant.phone')
+                    : $application->phone,
+                'country' => $request->exists('applicant.country')
+                    ? $request->input('applicant.country')
+                    : $application->country,
+                'city' => $request->exists('applicant.city')
+                    ? $request->input('applicant.city')
+                    : $application->city,
+                'date_of_birth' => $request->exists('applicant.date_of_birth')
+                    ? $request->input('applicant.date_of_birth')
+                    : optional($application->date_of_birth)->format('Y-m-d'),
+                'gender' => $request->exists('applicant.gender')
+                    ? $request->input('applicant.gender')
+                    : $application->gender,
+            ],
+
+            'background' => [
+                'education_level' => $request->exists('background.education_level')
+                    ? $request->input('background.education_level')
+                    : $application->education_level,
+                'school_name' => $request->exists('background.school_name')
+                    ? $request->input('background.school_name')
+                    : $application->school_name,
+                'field_of_study' => $request->exists('background.field_of_study')
+                    ? $request->input('background.field_of_study')
+                    : $application->field_of_study,
+            ],
+
+            'consents' => [
+                'agree_terms' => $request->exists('consents.agree_terms')
+                    ? $request->boolean('consents.agree_terms')
+                    : (bool) $application->agree_terms,
+                'agree_communication' => $request->exists('consents.agree_communication')
+                    ? $request->boolean('consents.agree_communication')
+                    : (bool) $application->agree_communication,
+            ],
+
+            'status' => $request->exists('status')
+                ? $request->input('status')
+                : $application->status,
+
+            'admin_note' => $request->exists('admin_note')
+                ? $request->input('admin_note')
+                : $application->admin_note,
+
+            'submitted_at' => $request->exists('submitted_at')
+                ? $request->input('submitted_at')
+                : optional($application->submitted_at)->toISOString(),
+        ];
     }
 
     /**
@@ -506,7 +820,8 @@ class ProgramApplicationController extends Controller
         ?string $email,
         ?string $phone,
         ?string $firstName,
-        ?string $lastName
+        ?string $lastName,
+        ?int $ignoreApplicationId = null
     ): array {
         $normalizedEmail = $this->normalizeEmail($email);
         $normalizedPhone = $this->normalizePhone($phone);
@@ -520,6 +835,9 @@ class ProgramApplicationController extends Controller
         ];
 
         $applications = ProgramApplication::where('program_id', $programId)
+            ->when($ignoreApplicationId, function ($query) use ($ignoreApplicationId) {
+                $query->where('id', '!=', $ignoreApplicationId);
+            })
             ->get(['email', 'phone', 'first_name', 'last_name']);
 
         foreach ($applications as $application) {
@@ -646,12 +964,19 @@ class ProgramApplicationController extends Controller
      */
     private function formatApplication(ProgramApplication $application): array
     {
+        $program = $application->program;
+
         return [
             'id' => $application->id,
             'program' => [
                 'id' => $application->program_id,
-                'title' => $application->program_title ?: optional($application->program)->name,
-                'slug' => $application->program_slug ?: optional($application->program)->slug,
+                'title' => $application->program_title ?: optional($program)->name,
+                'name' => $application->program_title ?: optional($program)->name,
+                'slug' => $application->program_slug ?: optional($program)->slug,
+                'skills' => $this->normalizeOptionValues(optional($program)->skills ?? []),
+                'tools' => $this->normalizeOptionValues(optional($program)->tools ?? []),
+                'experience_levels' => $this->normalizeOptionValues(optional($program)->experience_levels ?? []),
+                'shifts' => $this->normalizeShifts(optional($program)->shifts ?? []),
             ],
             'shift' => [
                 'id' => $application->shift_id,
